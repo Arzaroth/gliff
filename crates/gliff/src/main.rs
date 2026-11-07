@@ -152,6 +152,8 @@ struct App {
     session_list: gtk::Box,
     /// Input is not sent: the remote is only watched.
     view_only: Cell<bool>,
+    /// Tabs' machines lock their screens when the connection ends.
+    lock_on_disconnect: Cell<bool>,
     /// Evdev codes currently held on the remote, so they can all be released
     /// when the keyboard is handed back to the local compositor.
     pressed_keys: RefCell<BTreeSet<u32>>,
@@ -202,6 +204,10 @@ struct Session {
     members: RefCell<Vec<Rc<Session>>>,
     /// An extra session of another tab's machine; it has no tab.
     member: Cell<bool>,
+    /// The server can lock its screen.
+    lockable: Cell<bool>,
+    /// The connection (`conn`) last told to lock on disconnect.
+    lock_armed_conn: Cell<u64>,
     /// The server streams a dedicated headless output: its frames carry the
     /// compositor-drawn cursor, so the local pointer is hidden over the video.
     headless: Cell<bool>,
@@ -255,6 +261,8 @@ impl Session {
             panes: RefCell::new(Vec::new()),
             members: RefCell::new(Vec::new()),
             member: Cell::new(false),
+            lockable: Cell::new(false),
+            lock_armed_conn: Cell::new(0),
             headless: Cell::new(false),
             stream_size: Cell::new((0, 0)),
             stream_view: Cell::new((0, 0)),
@@ -506,6 +514,7 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
         session_btn: session_btn.clone(),
         session_list,
         view_only: Cell::new(false),
+        lock_on_disconnect: Cell::new(Config::load(&Config::default_path()).lock_on_disconnect),
         pressed_keys: RefCell::new(BTreeSet::new()),
         released: Cell::new(false),
         config_path: Config::default_path(),
@@ -1465,10 +1474,17 @@ fn poll_status(ui: Rc<App>, s: Rc<Session>, rx: Receiver<Status>, generation: u6
                     view_height,
                     fps_cap,
                     headless,
+                    lockable,
                 } => {
                     s.server_view.set((view_width, view_height));
                     s.fps_cap.set(fps_cap);
                     s.headless.set(headless);
+                    s.lockable.set(lockable);
+                    let first_connected = s.lock_armed_conn.replace(s.conn.get()) != s.conn.get();
+                    if first_connected && lockable && !s.member.get() && ui.lock_on_disconnect.get()
+                    {
+                        send_to(&s, ClientMsg::LockOnDisconnect { enabled: true });
+                    }
                     s.resize_requested.set((0, 0));
                     s.last_error.borrow_mut().take();
                     s.retries.set(0);
@@ -2619,6 +2635,52 @@ fn install_session_menu(ui: &Rc<App>) {
         });
         ui.session_list.append(&button);
     }
+    ui.session_list
+        .append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    let lock_now = gtk::Button::builder()
+        .label("Lock remote screen")
+        .has_frame(false)
+        .build();
+    let weak = Rc::downgrade(ui);
+    lock_now.connect_clicked(move |_| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        ui.session_btn.popdown();
+        if let Some(s) = active(&ui).filter(|s| s.lockable.get()) {
+            send_to(&s, ClientMsg::LockScreen);
+        }
+    });
+    ui.session_list.append(&lock_now);
+    let lock_later = gtk::CheckButton::with_label("Lock when disconnecting");
+    lock_later.set_active(ui.lock_on_disconnect.get());
+    let weak = Rc::downgrade(ui);
+    lock_later.connect_toggled(move |check| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let enabled = check.is_active();
+        ui.lock_on_disconnect.set(enabled);
+        let mut config = Config::load(&ui.config_path);
+        config.lock_on_disconnect = enabled;
+        save_config(&ui, &config);
+        for s in ui.sessions.borrow().iter().filter(|s| s.lockable.get()) {
+            send_to(s, ClientMsg::LockOnDisconnect { enabled });
+        }
+    });
+    ui.session_list.append(&lock_later);
+    let weak = Rc::downgrade(ui);
+    let popover = ui
+        .session_btn
+        .popover()
+        .expect("the session menu has a popover");
+    popover.connect_show(move |_| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let lockable = active(&ui).is_some_and(|s| s.connected.get() && s.lockable.get());
+        lock_now.set_sensitive(lockable);
+    });
 }
 
 /// The screen menu asks the shown machine for its screens each time it

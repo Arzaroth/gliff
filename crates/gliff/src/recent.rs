@@ -20,6 +20,9 @@ pub struct Config {
     /// The header's sound button is off: no tab plays its machine's sound.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub muted: bool,
+    /// Every tab's machine locks its screen when its connection ends.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lock_on_disconnect: bool,
 }
 
 impl Config {

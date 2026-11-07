@@ -14,7 +14,8 @@ use bytes::Bytes;
 use gliff_proto::clipboard::CHUNK;
 use gliff_proto::{
     features, is_incompatible, version_mismatch, ChromaMode, ClientCaps, ClientMsg, ClipboardFile,
-    ClipboardMsg, Codec, ServerMsg, VideoPipeline, FEATURE_AUDIO, FEATURE_MIC, PROTOCOL_VERSION,
+    ClipboardMsg, Codec, ServerMsg, VideoPipeline, FEATURE_AUDIO, FEATURE_LOCK, FEATURE_MIC,
+    PROTOCOL_VERSION,
 };
 use gliff_sw::VideoMode;
 use gliff_transport::clipboard::progress::Progress;
@@ -74,6 +75,8 @@ pub enum Status {
         /// The server serves a dedicated headless output whose frames carry
         /// the compositor-drawn cursor.
         headless: bool,
+        /// The server can lock its screen.
+        lockable: bool,
     },
     Stats {
         fps: f32,
@@ -499,6 +502,7 @@ where
     let mut headless = false;
     let mut server_audio = false;
     let mut server_mic = false;
+    let mut server_lock = false;
     let (mut cfg, pipeline) = loop {
         match reader.read_msg::<ServerMsg>().await? {
             ServerMsg::HelloAck {
@@ -516,6 +520,7 @@ where
                 headless = session.headless;
                 server_audio = features.iter().any(|f| f == FEATURE_AUDIO);
                 server_mic = features.iter().any(|f| f == FEATURE_MIC);
+                server_lock = features.iter().any(|f| f == FEATURE_LOCK);
                 got_ack = true;
             }
             ServerMsg::Ping { t } => writer.write_msg(&ClientMsg::Pong { t }).await?,
@@ -556,6 +561,7 @@ where
         view_height: cfg.view.1,
         fps_cap: cfg.fps_cap,
         headless,
+        lockable: server_lock,
     });
     let decode_on = match (&decoder, &gpu) {
         (VideoDecoder::Gpu(_), Some(g)) => g.name.as_str(),
@@ -938,6 +944,7 @@ where
                     view_height,
                     fps_cap,
                     headless,
+                    lockable: server_lock,
                 });
             }
             ServerMsg::CursorShape {

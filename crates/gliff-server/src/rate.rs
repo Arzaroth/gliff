@@ -1394,4 +1394,48 @@ mod tests {
         ctl.reconfigure(1280 * 720, 1, 15);
         assert_eq!(ctl.target(), before.clamp(ctl.min, ctl.effective_max()));
     }
+
+    #[test]
+    fn sharp_text_never_gives_up_resolution_and_colour_last() {
+        assert!(SHARP_TEXT.iter().all(|l| l.scale == 1.0));
+        let first_without_aux = SHARP_TEXT.iter().position(|l| !l.aux).unwrap();
+        assert_eq!(first_without_aux, SHARP_TEXT.len() - 1);
+        assert!(SHARP_TEXT.windows(2).all(|w| w[1].fps_cap <= w[0].fps_cap));
+    }
+
+    #[test]
+    fn smooth_motion_keeps_the_frame_rate_until_resolution_is_spent() {
+        let first_slower = SMOOTH_MOTION
+            .iter()
+            .position(|l| l.fps_cap != u32::MAX)
+            .unwrap();
+        assert_eq!(SMOOTH_MOTION[first_slower - 1].scale, 0.5);
+        assert!(SMOOTH_MOTION.windows(2).all(|w| w[1].scale <= w[0].scale));
+    }
+
+    #[test]
+    fn low_bandwidth_starts_reduced() {
+        assert!(LOW_BANDWIDTH.iter().all(|l| !l.aux && l.fps_cap <= 30));
+    }
+
+    #[test]
+    fn each_preset_has_its_own_ladder() {
+        use gliff_proto::Quality;
+        assert_eq!(levels(Quality::Auto).len(), LEVELS.len());
+        assert_eq!(levels(Quality::SharpText).len(), SHARP_TEXT.len());
+        assert_eq!(levels(Quality::SmoothMotion).len(), SMOOTH_MOTION.len());
+        assert_eq!(levels(Quality::LowBandwidth).len(), LOW_BANDWIDTH.len());
+        let ladder = Ladder::with_levels(&LOW_BANDWIDTH, 99);
+        assert_eq!(ladder.index(), LOW_BANDWIDTH.len() - 1);
+    }
+
+    #[test]
+    fn a_cap_set_mid_session_bounds_the_target_and_can_be_lifted() {
+        let mut ctl = RateController::new(2560 * 1440, 2, 60, None);
+        let before = ctl.target();
+        ctl.set_cap(Some(LOW_BANDWIDTH_CAP));
+        assert!(ctl.target() <= LOW_BANDWIDTH_CAP);
+        ctl.set_cap(None);
+        assert!(ctl.target() <= before.max(LOW_BANDWIDTH_CAP));
+    }
 }

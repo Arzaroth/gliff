@@ -896,6 +896,13 @@ mod tests {
             (ClientMsg::MicStop, "821480"),
             (ClientMsg::ListOutputs, "821580"),
             (ClientMsg::LockScreen, "821780"),
+            (
+                ClientMsg::Quality {
+                    mode: Quality::SharpText,
+                    max_fps: 15,
+                },
+                "82181982010f",
+            ),
             (ClientMsg::LockOnDisconnect { enabled: true }, "82181881f5"),
             (
                 ClientMsg::SelectOutput {

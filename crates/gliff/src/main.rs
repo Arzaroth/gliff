@@ -3089,6 +3089,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn quality_presets_keep_their_names() {
+        for (mode, _) in QUALITY_MODES {
+            assert_eq!(quality_from_name(quality_name(*mode)), *mode);
+        }
+        assert_eq!(quality_from_name("unheard-of"), gliff_proto::Quality::Auto);
+    }
+
+    #[test]
     fn a_key_combo_is_held_in_order_and_released_in_reverse() {
         assert_eq!(
             combo_events(&[29, 56, 111]),

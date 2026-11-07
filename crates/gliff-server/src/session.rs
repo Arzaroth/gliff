@@ -2195,6 +2195,14 @@ mod tests {
     }
 
     #[test]
+    fn a_frame_rate_cap_of_zero_means_none_and_others_are_bounded() {
+        assert_eq!(quality_max_fps(0), MAX_FPS);
+        assert_eq!(quality_max_fps(30), 30);
+        assert_eq!(quality_max_fps(1), 5);
+        assert_eq!(quality_max_fps(240), MAX_FPS);
+    }
+
+    #[test]
     fn a_rotated_monitor_is_mirrored_at_its_rotated_size() {
         let monitor = |transform: i32| -> hypr_ipc::Monitor {
             serde_json::from_value(serde_json::json!({

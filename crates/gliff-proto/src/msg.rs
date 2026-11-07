@@ -34,7 +34,7 @@ pub const PROTOCOL_VERSION: u16 = 1;
 
 /// Optional behaviours this build supports, exchanged in the handshake. A
 /// behaviour is used only when both ends list it.
-pub const FEATURES: &[&str] = &[FEATURE_AUDIO, FEATURE_MIC, FEATURE_OUTPUTS];
+pub const FEATURES: &[&str] = &[FEATURE_AUDIO, FEATURE_MIC, FEATURE_OUTPUTS, FEATURE_LOCK];
 
 /// Sound: the client turns it on with `ClientMsg::Audio`, and the server then
 /// sends `AudioStart` and a stream of `AudioFrame`s while it has sound to

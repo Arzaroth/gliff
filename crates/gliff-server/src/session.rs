@@ -293,6 +293,12 @@ where
     // A screen switched to may be static and send no first frame; this
     // rescues it the way `first_frame_deadline` rescues the first screen.
     let mut switch_rescue: Option<(tokio::time::Instant, u64)> = None;
+    let lock_supported = session
+        .caps
+        .features
+        .iter()
+        .any(|feature| feature == gliff_proto::FEATURE_LOCK);
+    let mut lock_on_end = crate::lock::LockOnEnd::default();
     loop {
         let flow = tokio::select! {
             msg = msg_rx.recv() => match msg {
@@ -323,6 +329,17 @@ where
                         }
                         session.send_outputs();
                     }
+                    ControlFlow::Continue(())
+                }
+                Some(Inbound::Msg(ClientMsg::LockScreen)) => {
+                    if lock_supported {
+                        crate::lock::lock();
+                    }
+                    ControlFlow::Continue(())
+                }
+                Some(Inbound::Msg(ClientMsg::LockOnDisconnect { enabled })) => {
+                    lock_on_end.armed = enabled && lock_supported;
+                    tracing::info!(enabled = lock_on_end.armed, "lock on disconnect");
                     ControlFlow::Continue(())
                 }
                 Some(Inbound::Msg(ClientMsg::MicStop)) => {
@@ -729,6 +746,7 @@ impl Session {
             ClientMsg::MicStart { .. } | ClientMsg::MicFrame { .. } | ClientMsg::MicStop => {}
             // Handled by the session loop, which owns the capture channel.
             ClientMsg::ListOutputs | ClientMsg::SelectOutput { .. } => {}
+            // Handled by the session loop, which owns the lock on disconnect.
             ClientMsg::LockScreen | ClientMsg::LockOnDisconnect { .. } => {}
             ClientMsg::Hello { .. } => anyhow::bail!("unexpected second Hello"),
         }

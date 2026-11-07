@@ -729,6 +729,7 @@ impl Session {
             ClientMsg::MicStart { .. } | ClientMsg::MicFrame { .. } | ClientMsg::MicStop => {}
             // Handled by the session loop, which owns the capture channel.
             ClientMsg::ListOutputs | ClientMsg::SelectOutput { .. } => {}
+            ClientMsg::LockScreen | ClientMsg::LockOnDisconnect { .. } => {}
             ClientMsg::Hello { .. } => anyhow::bail!("unexpected second Hello"),
         }
         Ok(ControlFlow::Continue(()))

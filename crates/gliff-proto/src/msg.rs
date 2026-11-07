@@ -50,6 +50,10 @@ pub const FEATURE_MIC: &str = "mic";
 /// and `SelectOutput`, answered with `ServerMsg::Outputs`.
 pub const FEATURE_OUTPUTS: &str = "outputs";
 
+/// Locking the remote's screen: `ClientMsg::LockScreen` locks it now, and
+/// `LockOnDisconnect` has the server lock it when the connection ends.
+pub const FEATURE_LOCK: &str = "lock";
+
 pub fn features() -> Vec<String> {
     FEATURES.iter().map(|f| f.to_string()).collect()
 }
@@ -368,6 +372,17 @@ pub enum ClientMsg {
     SelectOutput {
         #[n(0)]
         name: String,
+    },
+    /// Lock the remote's screen now. Sent only to a server that listed
+    /// [`FEATURE_LOCK`].
+    #[n(23)]
+    LockScreen,
+    /// Lock the remote's screen when this connection ends, or not; off
+    /// until the client says otherwise.
+    #[n(24)]
+    LockOnDisconnect {
+        #[n(0)]
+        enabled: bool,
     },
 }
 

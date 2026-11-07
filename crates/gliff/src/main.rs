@@ -2100,6 +2100,9 @@ fn install_input_handlers(
         let hotkey = hotkey.clone();
         let last_tap = last_tap.clone();
         key.connect_key_pressed(move |controller, keyval, keycode, state| {
+            if ui.view_only.get() {
+                return glib::Propagation::Proceed;
+            }
             let group = controller
                 .current_event()
                 .and_then(|event| {
@@ -2168,6 +2171,7 @@ fn install_input_handlers(
         motion.connect_enter(move |_, _, _| {
             if active(&ui).is_some()
                 && !ui.released.get()
+                && !ui.view_only.get()
                 && !address_bar_in_use(&ui.window, &ui.entry)
             {
                 video.grab_focus();
@@ -2219,7 +2223,7 @@ fn install_input_handlers(
                 kind,
                 gdk::EventType::ButtonPress | gdk::EventType::TouchBegin
             );
-            if pressed {
+            if pressed && !ui.view_only.get() {
                 ui.released.set(false);
                 video.grab_focus();
             }
@@ -2598,10 +2602,17 @@ fn install_session_menu(ui: &Rc<App>) {
             release_pressed_keys(&ui);
         }
         ui.view_only.set(check.is_active());
+        // Without focus the picture holds neither the keyboard nor the
+        // compositor's shortcuts, so they all stay local.
+        if check.is_active()
+            && gtk::prelude::GtkWindowExt::focus(&ui.window).is_some_and(|f| f == ui.video)
+        {
+            gtk::prelude::GtkWindowExt::set_focus(&ui.window, gtk::Widget::NONE);
+        }
         show_hint(
             &ui,
             if check.is_active() {
-                "View only: input is not sent"
+                "View only: input and shortcuts stay here"
             } else {
                 "Input is sent again"
             },

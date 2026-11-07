@@ -122,6 +122,8 @@ where
                 width: output.width,
                 height: output.height,
                 scale_milli: (output.scale * 1000.0).round() as u32,
+                x: None,
+                y: None,
             }],
             features: features(),
         })
@@ -881,26 +883,28 @@ impl Session {
     /// session lists only its own screen and cannot switch.
     fn send_outputs(&mut self) {
         let selectable = !self.output.is_headless();
-        let info = |o: &SessionOutput| ProtoOutput {
+        let info = |o: &SessionOutput, at: Option<(i32, i32)>| ProtoOutput {
             name: o.name.clone(),
             width: o.width,
             height: o.height,
             scale_milli: (o.scale * 1000.0).round() as u32,
+            x: at.map(|(x, _)| x),
+            y: at.map(|(_, y)| y),
         };
         let outputs = if selectable {
             match self.instance.monitors() {
                 Ok(mons) => mons
                     .iter()
                     .filter(|m| !m.disabled)
-                    .map(|m| info(&mirrored_output(m)))
+                    .map(|m| info(&mirrored_output(m), Some((m.x, m.y))))
                     .collect(),
                 Err(e) => {
                     tracing::warn!(error = %e, "cannot list outputs");
-                    vec![info(&self.output)]
+                    vec![info(&self.output, None)]
                 }
             }
         } else {
-            vec![info(&self.output)]
+            vec![info(&self.output, None)]
         };
         self.writer.send(
             ServerMsg::Outputs {

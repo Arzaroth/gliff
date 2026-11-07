@@ -639,6 +639,7 @@ impl Session {
             ClientMsg::Keymap { .. } => {}
             // Handled by the session loop, which owns the sound.
             ClientMsg::Audio { .. } => {}
+            ClientMsg::MicStart { .. } | ClientMsg::MicFrame { .. } | ClientMsg::MicStop => {}
             ClientMsg::Hello { .. } => anyhow::bail!("unexpected second Hello"),
         }
         Ok(ControlFlow::Continue(()))

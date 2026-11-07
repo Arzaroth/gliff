@@ -41,6 +41,11 @@ pub const FEATURES: &[&str] = &[FEATURE_AUDIO];
 /// capture.
 pub const FEATURE_AUDIO: &str = "audio";
 
+/// The client's microphone: `ClientMsg::MicStart`, a stream of `MicFrame`s,
+/// then `MicStop`. The server plays it into a virtual source that the remote
+/// desktop's applications record from.
+pub const FEATURE_MIC: &str = "mic";
+
 pub fn features() -> Vec<String> {
     FEATURES.iter().map(|f| f.to_string()).collect()
 }
@@ -319,6 +324,30 @@ pub enum ClientMsg {
         #[n(0)]
         enabled: bool,
     },
+    /// The microphone that follows in `MicFrame`s; sent whenever capture
+    /// (re)starts, so the server resets its decoder. Sent only to a server
+    /// that listed [`FEATURE_MIC`].
+    #[n(18)]
+    MicStart {
+        #[n(0)]
+        codec: AudioCodec,
+        #[n(1)]
+        sample_rate: u32,
+        #[n(2)]
+        channels: u32,
+    },
+    /// One coded packet; `data_len` payload bytes follow the header. `seq`
+    /// counts packets since the last `MicStart` and wraps.
+    #[n(19)]
+    MicFrame {
+        #[n(0)]
+        seq: u32,
+        #[n(1)]
+        data_len: u32,
+    },
+    /// The microphone is off: the server removes its virtual source.
+    #[n(20)]
+    MicStop,
 }
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]

@@ -303,6 +303,55 @@ impl FramePaintable {
 mod tests {
     use super::*;
 
+    fn rect(x: f64, y: f64, width: f64, height: f64) -> Rect {
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn screens_keep_their_places_in_proportion() {
+        let screens = [
+            rect(0.0, 0.0, 2560.0, 1440.0),
+            rect(2560.0, 180.0, 1920.0, 1080.0),
+            rect(4480.0, 0.0, 2560.0, 1440.0),
+        ];
+        let panes = arrange(&screens, 1404.0, 1000.0);
+        assert_eq!(panes.len(), 3);
+        let fit = 1404.0 / 7040.0;
+        let top = (1000.0 - 1440.0 * fit) / 2.0;
+        assert_eq!(panes[0], rect(0.0, top, 2560.0 * fit, 1440.0 * fit));
+        assert_eq!(
+            panes[1],
+            rect(2560.0 * fit, top + 180.0 * fit, 1920.0 * fit, 1080.0 * fit)
+        );
+        assert_eq!(panes[2].x + panes[2].width, 1404.0);
+    }
+
+    #[test]
+    fn screens_are_placed_relative_to_the_leftmost_and_topmost() {
+        let panes = arrange(
+            &[
+                rect(-1920.0, -100.0, 1920.0, 1080.0),
+                rect(0.0, 0.0, 1920.0, 1080.0),
+            ],
+            384.0,
+            1000.0,
+        );
+        assert_eq!(panes[0].x, 0.0);
+        assert_eq!(panes[1].x, 192.0);
+        assert_eq!(panes[1].y - panes[0].y, 10.0);
+    }
+
+    #[test]
+    fn nothing_to_arrange_gives_no_panes() {
+        assert!(arrange(&[], 100.0, 100.0).is_empty());
+        assert!(arrange(&[rect(0.0, 0.0, 10.0, 10.0)], 0.0, 100.0).is_empty());
+    }
+
     #[test]
     fn doubles_when_the_widget_has_room() {
         let l = layout((2560, 1440), 2.0, 2560.0, 1440.0).unwrap();

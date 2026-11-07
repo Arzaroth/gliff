@@ -2753,6 +2753,50 @@ fn update_sound(ui: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn output(
+        name: &str,
+        size: (u32, u32),
+        scale_milli: u32,
+        at: Option<(i32, i32)>,
+    ) -> gliff_proto::OutputInfo {
+        gliff_proto::OutputInfo {
+            name: name.into(),
+            width: size.0,
+            height: size.1,
+            scale_milli,
+            x: at.map(|a| a.0),
+            y: at.map(|a| a.1),
+        }
+    }
+
+    #[test]
+    fn screens_stand_where_the_server_puts_them_at_their_logical_size() {
+        let places = screen_places(&[
+            output("DP-2", (2560, 1440), 1000, Some((0, 0))),
+            output("eDP-1", (2256, 1504), 2000, Some((2560, 180))),
+        ]);
+        assert_eq!(places[0].0, "DP-2");
+        assert_eq!(
+            places[1].1,
+            paintable::Rect {
+                x: 2560.0,
+                y: 180.0,
+                width: 1128.0,
+                height: 752.0
+            }
+        );
+    }
+
+    #[test]
+    fn screens_without_positions_stand_in_a_row() {
+        let places = screen_places(&[
+            output("DP-1", (2560, 1440), 1000, None),
+            output("DP-2", (1920, 1080), 1000, Some((9, 9))),
+        ]);
+        assert_eq!((places[0].1.x, places[0].1.y), (0.0, 0.0));
+        assert_eq!((places[1].1.x, places[1].1.y), (2560.0, 0.0));
+    }
     use std::cell::RefCell;
 
     type Input = tokio::sync::mpsc::UnboundedReceiver<clipboard::ToWorker>;

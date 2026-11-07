@@ -23,6 +23,18 @@ pub struct Config {
     /// Every tab's machine locks its screen when its connection ends.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lock_on_disconnect: bool,
+    /// Each machine's quality preset, when not the default.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub quality: std::collections::BTreeMap<String, MachineQuality>,
+}
+
+/// A machine's quality preset: `auto`, `sharp-text`, `smooth-motion` or
+/// `low-bandwidth`, and a frame-rate cap, 0 for none.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct MachineQuality {
+    pub mode: String,
+    #[serde(default)]
+    pub max_fps: u32,
 }
 
 impl Config {
@@ -87,6 +99,7 @@ impl Config {
 
     pub fn forget(&mut self, machine: &str) {
         self.machines.retain(|m| m != machine);
+        self.quality.remove(machine);
         self.set_open(machine, false);
         if self.shown.as_deref() == Some(machine) {
             self.shown = None;

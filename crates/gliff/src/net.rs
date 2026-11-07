@@ -15,7 +15,7 @@ use gliff_proto::clipboard::CHUNK;
 use gliff_proto::{
     features, is_incompatible, version_mismatch, ChromaMode, ClientCaps, ClientMsg, ClipboardFile,
     ClipboardMsg, Codec, ServerMsg, VideoPipeline, FEATURE_AUDIO, FEATURE_LOCK, FEATURE_MIC,
-    PROTOCOL_VERSION,
+    FEATURE_QUALITY, PROTOCOL_VERSION,
 };
 use gliff_sw::VideoMode;
 use gliff_transport::clipboard::progress::Progress;
@@ -77,6 +77,8 @@ pub enum Status {
         headless: bool,
         /// The server can lock its screen.
         lockable: bool,
+        /// The server follows quality presets.
+        tunable: bool,
     },
     Stats {
         fps: f32,
@@ -503,6 +505,7 @@ where
     let mut server_audio = false;
     let mut server_mic = false;
     let mut server_lock = false;
+    let mut server_quality = false;
     let (mut cfg, pipeline) = loop {
         match reader.read_msg::<ServerMsg>().await? {
             ServerMsg::HelloAck {
@@ -521,6 +524,7 @@ where
                 server_audio = features.iter().any(|f| f == FEATURE_AUDIO);
                 server_mic = features.iter().any(|f| f == FEATURE_MIC);
                 server_lock = features.iter().any(|f| f == FEATURE_LOCK);
+                server_quality = features.iter().any(|f| f == FEATURE_QUALITY);
                 got_ack = true;
             }
             ServerMsg::Ping { t } => writer.write_msg(&ClientMsg::Pong { t }).await?,
@@ -562,6 +566,7 @@ where
         fps_cap: cfg.fps_cap,
         headless,
         lockable: server_lock,
+        tunable: server_quality,
     });
     let decode_on = match (&decoder, &gpu) {
         (VideoDecoder::Gpu(_), Some(g)) => g.name.as_str(),
@@ -945,6 +950,7 @@ where
                     fps_cap,
                     headless,
                     lockable: server_lock,
+                    tunable: server_quality,
                 });
             }
             ServerMsg::CursorShape {

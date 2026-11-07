@@ -206,6 +206,8 @@ struct Session {
     member: Cell<bool>,
     /// The server can lock its screen.
     lockable: Cell<bool>,
+    /// The server follows quality presets.
+    tunable: Cell<bool>,
     /// The connection (`conn`) last told to lock on disconnect.
     lock_armed_conn: Cell<u64>,
     /// The server streams a dedicated headless output: its frames carry the
@@ -262,6 +264,7 @@ impl Session {
             members: RefCell::new(Vec::new()),
             member: Cell::new(false),
             lockable: Cell::new(false),
+            tunable: Cell::new(false),
             lock_armed_conn: Cell::new(0),
             headless: Cell::new(false),
             stream_size: Cell::new((0, 0)),
@@ -1475,6 +1478,7 @@ fn poll_status(ui: Rc<App>, s: Rc<Session>, rx: Receiver<Status>, generation: u6
                     fps_cap,
                     headless,
                     lockable,
+                    tunable,
                 } => {
                     s.server_view.set((view_width, view_height));
                     s.fps_cap.set(fps_cap);
@@ -1484,6 +1488,11 @@ fn poll_status(ui: Rc<App>, s: Rc<Session>, rx: Receiver<Status>, generation: u6
                     if first_connected && lockable && !s.member.get() && ui.lock_on_disconnect.get()
                     {
                         send_to(&s, ClientMsg::LockOnDisconnect { enabled: true });
+                    }
+                    s.tunable.set(tunable);
+                    let quality = machine_quality(&ui, &s.name);
+                    if first_connected && tunable && quality != Default::default() {
+                        send_quality(&s, quality);
                     }
                     s.resize_requested.set((0, 0));
                     s.last_error.borrow_mut().take();
@@ -2588,6 +2597,73 @@ fn combo_events(codes: &[u32]) -> Vec<(u32, bool)> {
         .collect()
 }
 
+const QUALITY_MODES: &[(gliff_proto::Quality, &str)] = &[
+    (gliff_proto::Quality::Auto, "Automatic"),
+    (gliff_proto::Quality::SharpText, "Sharp text"),
+    (gliff_proto::Quality::SmoothMotion, "Smooth motion"),
+    (gliff_proto::Quality::LowBandwidth, "Low bandwidth"),
+];
+
+const FPS_CAPS: &[(u32, &str)] = &[
+    (0, "Up to 60 fps"),
+    (30, "Up to 30 fps"),
+    (15, "Up to 15 fps"),
+];
+
+fn quality_name(mode: gliff_proto::Quality) -> &'static str {
+    match mode {
+        gliff_proto::Quality::Auto => "auto",
+        gliff_proto::Quality::SharpText => "sharp-text",
+        gliff_proto::Quality::SmoothMotion => "smooth-motion",
+        gliff_proto::Quality::LowBandwidth => "low-bandwidth",
+    }
+}
+
+fn quality_from_name(name: &str) -> gliff_proto::Quality {
+    QUALITY_MODES
+        .iter()
+        .map(|(m, _)| *m)
+        .find(|m| quality_name(*m) == name)
+        .unwrap_or_default()
+}
+
+/// A machine's quality preset from the config, the default when none.
+fn machine_quality(ui: &App, machine: &str) -> (gliff_proto::Quality, u32) {
+    Config::load(&ui.config_path)
+        .quality
+        .get(machine)
+        .map(|q| (quality_from_name(&q.mode), q.max_fps))
+        .unwrap_or_default()
+}
+
+fn set_machine_quality(ui: &App, machine: &str, quality: (gliff_proto::Quality, u32)) {
+    let mut config = Config::load(&ui.config_path);
+    if quality == Default::default() {
+        config.quality.remove(machine);
+    } else {
+        config.quality.insert(
+            machine.to_string(),
+            recent::MachineQuality {
+                mode: quality_name(quality.0).to_string(),
+                max_fps: quality.1,
+            },
+        );
+    }
+    save_config(ui, &config);
+}
+
+fn send_quality(s: &Session, quality: (gliff_proto::Quality, u32)) {
+    if s.tunable.get() {
+        send_to(
+            s,
+            ClientMsg::Quality {
+                mode: quality.0,
+                max_fps: quality.1,
+            },
+        );
+    }
+}
+
 /// The session menu: watch without sending input, and send keys the local
 /// compositor would otherwise catch. Sent keys go out even when only
 /// watching, since they are asked for explicitly.
@@ -2648,6 +2724,83 @@ fn install_session_menu(ui: &Rc<App>) {
     }
     ui.session_list
         .append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    let quality_heading = gtk::Label::builder()
+        .label("Quality")
+        .halign(gtk::Align::Start)
+        .css_classes(["dim-label"])
+        .build();
+    ui.session_list.append(&quality_heading);
+    let syncing = Rc::new(Cell::new(false));
+    let mut mode_checks: Vec<(gliff_proto::Quality, gtk::CheckButton)> = Vec::new();
+    for (mode, label) in QUALITY_MODES {
+        let check = gtk::CheckButton::with_label(label);
+        if let Some((_, first)) = mode_checks.first() {
+            check.set_group(Some(first));
+        }
+        mode_checks.push((*mode, check));
+    }
+    let mut fps_checks: Vec<(u32, gtk::CheckButton)> = Vec::new();
+    for (fps, label) in FPS_CAPS {
+        let check = gtk::CheckButton::with_label(label);
+        if let Some((_, first)) = fps_checks.first() {
+            check.set_group(Some(first));
+        }
+        fps_checks.push((*fps, check));
+    }
+    let chosen = {
+        let mode_checks = mode_checks.clone();
+        let fps_checks = fps_checks.clone();
+        move || {
+            let mode = mode_checks
+                .iter()
+                .find(|(_, c)| c.is_active())
+                .map_or(gliff_proto::Quality::Auto, |(m, _)| *m);
+            let fps = fps_checks
+                .iter()
+                .find(|(_, c)| c.is_active())
+                .map_or(0, |(f, _)| *f);
+            (mode, fps)
+        }
+    };
+    let on_change = {
+        let weak = Rc::downgrade(ui);
+        let syncing = syncing.clone();
+        Rc::new(move |check: &gtk::CheckButton| {
+            if syncing.get() || !check.is_active() {
+                return;
+            }
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let Some(s) = active(&ui) else {
+                return;
+            };
+            set_machine_quality(&ui, &s.name, chosen());
+            let quality = machine_quality(&ui, &s.name);
+            for shown in shown_sessions(&ui) {
+                send_quality(&shown, quality);
+            }
+        })
+    };
+    for (_, check) in &mode_checks {
+        let on_change = on_change.clone();
+        check.connect_toggled(move |c| on_change(c));
+        ui.session_list.append(check);
+    }
+    let fps_heading = gtk::Label::builder()
+        .label("Frame rate")
+        .halign(gtk::Align::Start)
+        .css_classes(["dim-label"])
+        .margin_top(6)
+        .build();
+    ui.session_list.append(&fps_heading);
+    for (_, check) in &fps_checks {
+        let on_change = on_change.clone();
+        check.connect_toggled(move |c| on_change(c));
+        ui.session_list.append(check);
+    }
+    ui.session_list
+        .append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     let lock_now = gtk::Button::builder()
         .label("Lock remote screen")
         .has_frame(false)
@@ -2691,6 +2844,21 @@ fn install_session_menu(ui: &Rc<App>) {
         };
         let lockable = active(&ui).is_some_and(|s| s.connected.get() && s.lockable.get());
         lock_now.set_sensitive(lockable);
+        let shown = active(&ui);
+        let tunable = shown.as_ref().is_some_and(|s| s.tunable.get());
+        let (mode, fps) = shown
+            .map(|s| machine_quality(&ui, &s.name))
+            .unwrap_or_default();
+        syncing.set(true);
+        for (m, check) in &mode_checks {
+            check.set_active(*m == mode);
+            check.set_sensitive(tunable);
+        }
+        for (f, check) in &fps_checks {
+            check.set_active(*f == fps);
+            check.set_sensitive(tunable);
+        }
+        syncing.set(false);
     });
 }
 

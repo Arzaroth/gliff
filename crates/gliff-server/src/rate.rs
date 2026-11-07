@@ -365,6 +365,7 @@ pub const LEVELS: [Level; 7] = [
 /// moves use the first measured capacity while downward moves wait for
 /// confirmed congestion.
 pub struct Ladder {
+    levels: &'static [Level],
     index: usize,
     hold_up: Duration,
     below_since: Option<Instant>,
@@ -379,8 +380,15 @@ const DOWN_FLOOR_MULT: f64 = 0.9;
 
 impl Ladder {
     pub fn new(start: usize) -> Self {
+        Self::with_levels(&LEVELS, start)
+    }
+
+    /// A ladder over `levels`, best first, starting at `start`.
+    pub fn with_levels(levels: &'static [Level], start: usize) -> Self {
+        assert!(!levels.is_empty(), "a ladder needs a level");
         Self {
-            index: start.min(LEVELS.len() - 1),
+            levels,
+            index: start.min(levels.len() - 1),
             hold_up: HOLD_UP,
             below_since: None,
             last_change: None,
@@ -389,7 +397,7 @@ impl Ladder {
     }
 
     pub fn level(&self) -> &'static Level {
-        &LEVELS[self.index]
+        &self.levels[self.index]
     }
 
     pub fn index(&self) -> usize {
@@ -421,6 +429,7 @@ impl Ladder {
     /// The lowest (best) level whose per-stream budget stays at or above
     /// `floor_mult` x FLOOR_BPP; the last level when none does.
     fn select(
+        &self,
         rate_bps: f64,
         pixels: u64,
         dual: bool,
@@ -428,13 +437,13 @@ impl Ladder {
         max_fps: u32,
         floor_mult: f64,
     ) -> usize {
-        LEVELS
+        self.levels
             .iter()
             .position(|l| {
                 Self::affordable_bpp(rate_bps, pixels, dual, can_drop_aux, max_fps, l)
                     >= floor_mult * FLOOR_BPP
             })
-            .unwrap_or(LEVELS.len() - 1)
+            .unwrap_or(self.levels.len() - 1)
     }
 
     /// Consider a move. Returns the new index when the level changed.
@@ -454,8 +463,8 @@ impl Ladder {
         // Down-moves need real (not app-limited) evidence: a static screen's
         // refinement trickle must not read as a slow link.
         let real = link.rate_recent_bps(now).is_some();
-        let sel = Self::select(rate, pixels, dual, can_drop_aux, max_fps, 1.0);
-        let down = Self::select(rate, pixels, dual, can_drop_aux, max_fps, DOWN_FLOOR_MULT);
+        let sel = self.select(rate, pixels, dual, can_drop_aux, max_fps, 1.0);
+        let down = self.select(rate, pixels, dual, can_drop_aux, max_fps, DOWN_FLOOR_MULT);
 
         if slow_start {
             if sel < self.index || (down > self.index && real && recent_congestion) {
@@ -468,7 +477,7 @@ impl Ladder {
         if sel < self.index {
             self.below_since = None;
             // Step up needs headroom (1.25x the floor) and a full hold.
-            let up = Self::select(rate, pixels, dual, can_drop_aux, max_fps, 1.25);
+            let up = self.select(rate, pixels, dual, can_drop_aux, max_fps, 1.25);
             let held = self
                 .last_change
                 .is_none_or(|t| now.duration_since(t) >= self.hold_up);
@@ -1029,7 +1038,7 @@ mod tests {
         let mut active = Sim::new(pixels, 2, 60);
         active.run(1.0, 30, 70.0, 40e6);
         assert_eq!(
-            Ladder::select(
+            Ladder::new(0).select(
                 active.link.rate_max_bps(active.now).unwrap(),
                 pixels,
                 true,
@@ -1134,7 +1143,7 @@ mod tests {
             (0.3e6, 2560 * 1440, true, 6), // worse than the ladder: last level
         ];
         for (rate, pixels, dual, expected) in cases {
-            let got = Ladder::select(rate, pixels, dual, true, 60, 1.0);
+            let got = Ladder::new(0).select(rate, pixels, dual, true, 60, 1.0);
             assert_eq!(got, expected, "rate {rate} pixels {pixels}");
         }
     }
@@ -1144,7 +1153,7 @@ mod tests {
         // The client decodes only Dual420: rungs cannot drop the aux
         // stream, so the satellite rate must buy a deeper rung (lower fps
         // or resolution) instead of an undecodable Single420 one.
-        let sel = Ladder::select(2.5e6, 2560 * 1440, true, false, 60, 1.0);
+        let sel = Ladder::new(0).select(2.5e6, 2560 * 1440, true, false, 60, 1.0);
         assert_eq!(sel, 5, "expected the half-resolution rung, got {sel}");
     }
 

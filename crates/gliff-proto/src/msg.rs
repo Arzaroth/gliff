@@ -46,6 +46,10 @@ pub const FEATURE_AUDIO: &str = "audio";
 /// desktop's applications record from.
 pub const FEATURE_MIC: &str = "mic";
 
+/// Choosing the mirrored screen during a session: `ClientMsg::ListOutputs`
+/// and `SelectOutput`, answered with `ServerMsg::Outputs`.
+pub const FEATURE_OUTPUTS: &str = "outputs";
+
 pub fn features() -> Vec<String> {
     FEATURES.iter().map(|f| f.to_string()).collect()
 }
@@ -348,6 +352,17 @@ pub enum ClientMsg {
     /// The microphone is off: the server removes its virtual source.
     #[n(20)]
     MicStop,
+    /// Ask for the remote's screens; the server answers with `Outputs`.
+    /// Sent only to a server that listed [`FEATURE_OUTPUTS`].
+    #[n(21)]
+    ListOutputs,
+    /// Mirror the named screen instead of the current one. The server
+    /// answers with `Outputs`, whose `current` says whether it switched.
+    #[n(22)]
+    SelectOutput {
+        #[n(0)]
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
@@ -531,6 +546,18 @@ pub enum ServerMsg {
         seq: u32,
         #[n(1)]
         data_len: u32,
+    },
+    /// The remote's screens and the one this session shows. Sent only to a
+    /// client that listed [`FEATURE_OUTPUTS`]; `selectable` is false when
+    /// the session cannot switch, such as on a private headless screen.
+    #[n(15)]
+    Outputs {
+        #[n(0)]
+        outputs: Vec<OutputInfo>,
+        #[n(1)]
+        current: String,
+        #[n(2)]
+        selectable: bool,
     },
 }
 

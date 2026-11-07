@@ -673,6 +673,7 @@ impl Session {
             ClientMsg::Audio { .. } => {}
             // Handled by the session loop, which owns the microphone.
             ClientMsg::MicStart { .. } | ClientMsg::MicFrame { .. } | ClientMsg::MicStop => {}
+            ClientMsg::ListOutputs | ClientMsg::SelectOutput { .. } => {}
             ClientMsg::Hello { .. } => anyhow::bail!("unexpected second Hello"),
         }
         Ok(ControlFlow::Continue(()))

@@ -15,7 +15,7 @@ use gliff_proto::clipboard::CHUNK;
 use gliff_proto::{
     features, is_incompatible, version_mismatch, ChromaMode, ClientCaps, ClientMsg, ClipboardFile,
     ClipboardMsg, Codec, ServerMsg, VideoPipeline, FEATURE_AUDIO, FEATURE_LOCK, FEATURE_MIC,
-    FEATURE_QUALITY, PROTOCOL_VERSION,
+    FEATURE_PRIVACY, FEATURE_QUALITY, PROTOCOL_VERSION,
 };
 use gliff_sw::VideoMode;
 use gliff_transport::clipboard::progress::Progress;
@@ -79,6 +79,9 @@ pub enum Status {
         lockable: bool,
         /// The server follows quality presets.
         tunable: bool,
+        /// The server can cover its other screens: a private screen on a
+        /// server with privacy mode.
+        coverable: bool,
     },
     Stats {
         fps: f32,
@@ -124,6 +127,8 @@ pub enum Status {
         current: String,
         selectable: bool,
     },
+    /// Privacy mode is on or off on the server.
+    Privacy(bool),
     Closed,
 }
 
@@ -506,6 +511,7 @@ where
     let mut server_mic = false;
     let mut server_lock = false;
     let mut server_quality = false;
+    let mut server_privacy = false;
     let (mut cfg, pipeline) = loop {
         match reader.read_msg::<ServerMsg>().await? {
             ServerMsg::HelloAck {
@@ -525,6 +531,7 @@ where
                 server_mic = features.iter().any(|f| f == FEATURE_MIC);
                 server_lock = features.iter().any(|f| f == FEATURE_LOCK);
                 server_quality = features.iter().any(|f| f == FEATURE_QUALITY);
+                server_privacy = features.iter().any(|f| f == FEATURE_PRIVACY);
                 got_ack = true;
             }
             ServerMsg::Ping { t } => writer.write_msg(&ClientMsg::Pong { t }).await?,
@@ -567,6 +574,7 @@ where
         headless,
         lockable: server_lock,
         tunable: server_quality,
+        coverable: server_privacy && headless,
     });
     let decode_on = match (&decoder, &gpu) {
         (VideoDecoder::Gpu(_), Some(g)) => g.name.as_str(),
@@ -951,6 +959,7 @@ where
                     headless,
                     lockable: server_lock,
                     tunable: server_quality,
+                    coverable: server_privacy && headless,
                 });
             }
             ServerMsg::CursorShape {
@@ -998,6 +1007,9 @@ where
                 anyhow::bail!("server error {code}: {message}")
             }
             ServerMsg::HelloAck { .. } => {}
+            ServerMsg::Privacy { enabled } => {
+                let _ = status.send(Status::Privacy(enabled));
+            }
             ServerMsg::Outputs {
                 outputs,
                 current,

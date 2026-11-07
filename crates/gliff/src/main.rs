@@ -208,6 +208,9 @@ struct Session {
     lockable: Cell<bool>,
     /// The server follows quality presets.
     tunable: Cell<bool>,
+    /// The server can cover its other screens, and has.
+    coverable: Cell<bool>,
+    privacy_on: Cell<bool>,
     /// The connection (`conn`) last told to lock on disconnect.
     lock_armed_conn: Cell<u64>,
     /// The server streams a dedicated headless output: its frames carry the
@@ -265,6 +268,8 @@ impl Session {
             member: Cell::new(false),
             lockable: Cell::new(false),
             tunable: Cell::new(false),
+            coverable: Cell::new(false),
+            privacy_on: Cell::new(false),
             lock_armed_conn: Cell::new(0),
             headless: Cell::new(false),
             stream_size: Cell::new((0, 0)),
@@ -1222,6 +1227,7 @@ fn show_disconnected(ui: &Rc<App>, s: &Rc<Session>) {
     s.server_view.set((0, 0));
     s.cursor.borrow_mut().take();
     s.outputs.borrow_mut().clear();
+    s.privacy_on.set(false);
     ui.transfers.clear_connection(s.conn.get());
     set_stats(ui, s, "");
     if all_screens(ui).is_some() {
@@ -1479,6 +1485,7 @@ fn poll_status(ui: Rc<App>, s: Rc<Session>, rx: Receiver<Status>, generation: u6
                     headless,
                     lockable,
                     tunable,
+                    coverable,
                 } => {
                     s.server_view.set((view_width, view_height));
                     s.fps_cap.set(fps_cap);
@@ -1490,6 +1497,7 @@ fn poll_status(ui: Rc<App>, s: Rc<Session>, rx: Receiver<Status>, generation: u6
                         send_to(&s, ClientMsg::LockOnDisconnect { enabled: true });
                     }
                     s.tunable.set(tunable);
+                    s.coverable.set(coverable);
                     let quality = machine_quality(&ui, &s.name);
                     if first_connected && tunable && quality != Default::default() {
                         send_quality(&s, quality);
@@ -1630,6 +1638,19 @@ fn poll_status(ui: Rc<App>, s: Rc<Session>, rx: Receiver<Status>, generation: u6
                     }
                     if is_active(&ui, &s) {
                         refresh_screens(&ui);
+                    }
+                }
+                Status::Privacy(enabled) => {
+                    let asked = s.privacy_on.replace(enabled);
+                    if is_active(&ui, &s) {
+                        show_hint(
+                            &ui,
+                            match (enabled, asked) {
+                                (true, _) => "Privacy mode: the remote's other screens are covered",
+                                (false, true) => "Privacy mode is not available here",
+                                (false, false) => "Privacy mode is off",
+                            },
+                        );
                     }
                 }
                 Status::Closed => {
@@ -2833,6 +2854,33 @@ fn install_session_menu(ui: &Rc<App>) {
         }
     });
     ui.session_list.append(&lock_later);
+    let privacy = gtk::CheckButton::with_label("Privacy mode");
+    privacy.set_tooltip_text(Some(
+        "Cover the remote's other screens while you use a private one",
+    ));
+    let weak = Rc::downgrade(ui);
+    let privacy_syncing = Rc::new(Cell::new(false));
+    {
+        let privacy_syncing = privacy_syncing.clone();
+        privacy.connect_toggled(move |check| {
+            if privacy_syncing.get() {
+                return;
+            }
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            if let Some(s) = active(&ui).filter(|s| s.coverable.get()) {
+                s.privacy_on.set(check.is_active());
+                send_to(
+                    &s,
+                    ClientMsg::Privacy {
+                        enabled: check.is_active(),
+                    },
+                );
+            }
+        });
+    }
+    ui.session_list.append(&privacy);
     let weak = Rc::downgrade(ui);
     let popover = ui
         .session_btn
@@ -2844,6 +2892,11 @@ fn install_session_menu(ui: &Rc<App>) {
         };
         let lockable = active(&ui).is_some_and(|s| s.connected.get() && s.lockable.get());
         lock_now.set_sensitive(lockable);
+        let coverable = active(&ui).filter(|s| s.connected.get() && s.coverable.get());
+        privacy_syncing.set(true);
+        privacy.set_sensitive(coverable.is_some());
+        privacy.set_active(coverable.is_some_and(|s| s.privacy_on.get()));
+        privacy_syncing.set(false);
         let shown = active(&ui);
         let tunable = shown.as_ref().is_some_and(|s| s.tunable.get());
         let (mode, fps) = shown

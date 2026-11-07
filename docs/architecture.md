@@ -287,6 +287,23 @@ Every crate with `unsafe` documents the safety requirements at each block.
   local Gliff client plays, so two such hosts that show each other echo.
   The recorders run as children so the server links no audio library.
 
+- **Microphone.** The same format the other way. A client sends
+  `ClientMsg::MicStart`, one `MicFrame` per 10 ms Opus packet and then
+  `MicStop`, only to a server that listed the `mic` feature and only for
+  the tab it shows. It records with `pw-record` pinned to one input, the
+  default at start or `--mic-source`, and refuses an input named
+  `gliff-mic-*`: following default changes could record the Gliff
+  microphone of a machine that shows this one and loop the sound back.
+  The server makes a FIFO in the runtime directory and has `pw-cli -m`
+  load `libpipewire-module-pipe-tunnel` as a source reading it, named
+  `gliff-mic-<pid>`; the module lives as long as that child. It writes a
+  60 ms cushion of silence, then each decoded frame as one write below
+  `PIPE_BUF`, so a full FIFO drops whole frames. The tunnel adjusts its
+  rate to the FIFO's fill, which absorbs clock drift between the two
+  machines. The source becomes `default.configured.audio.source` while it
+  lives; the previous value is put back when it goes, unless the default
+  changed to something else in between.
+
 ## Measurements
 
 On an AMD Radeon RX 7600 (RADV for compute, radeonsi for the codec, Mesa

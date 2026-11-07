@@ -313,6 +313,18 @@ Every crate with `unsafe` documents the safety requirements at each block.
   and the protocol single-stream, and give each screen its own rate
   control over its own TCP stream.
 
+- **Screen lock.** A server that listed the `lock` feature reads the user's
+  graphical session from logind (`loginctl show-user <uid> -p Display`)
+  and runs `loginctl lock-session` on it, for `ClientMsg::LockScreen` and,
+  once `LockOnDisconnect` armed it, from a guard dropped on every way out
+  of the session. logind sends that session a Lock signal, which the
+  desktop's idle daemon answers with its own lock screen; logind lets the
+  session's owner lock it without a polkit prompt. The client arms it on
+  each tab's connection, never on the extra sessions of all screens, which
+  end whenever all screens are left. View only and the keys to send are
+  client-side: input stops at `send()`, and a key combo is a run of
+  `ClientMsg::Key` presses then releases in reverse.
+
 - **Microphone.** The same format the other way. A client sends
   `ClientMsg::MicStart`, one `MicFrame` per 10 ms Opus packet and then
   `MicStop`, only to a server that listed the `mic` feature and only for

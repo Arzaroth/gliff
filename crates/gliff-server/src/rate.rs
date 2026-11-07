@@ -359,6 +359,119 @@ pub const LEVELS: [Level; 7] = [
     },
 ];
 
+/// Sharp text: frame rate goes all the way down before anything else, and
+/// colour detail only at the floor; resolution never.
+pub const SHARP_TEXT: [Level; 6] = [
+    Level {
+        fps_cap: u32::MAX,
+        aux: true,
+        scale: 1.0,
+    },
+    Level {
+        fps_cap: 30,
+        aux: true,
+        scale: 1.0,
+    },
+    Level {
+        fps_cap: 15,
+        aux: true,
+        scale: 1.0,
+    },
+    Level {
+        fps_cap: 10,
+        aux: true,
+        scale: 1.0,
+    },
+    Level {
+        fps_cap: 5,
+        aux: true,
+        scale: 1.0,
+    },
+    Level {
+        fps_cap: 5,
+        aux: false,
+        scale: 1.0,
+    },
+];
+
+/// Smooth motion: colour detail, then resolution, keep the frame rate;
+/// it drops only at the bottom, where nothing else is left.
+pub const SMOOTH_MOTION: [Level; 6] = [
+    Level {
+        fps_cap: u32::MAX,
+        aux: true,
+        scale: 1.0,
+    },
+    Level {
+        fps_cap: u32::MAX,
+        aux: false,
+        scale: 1.0,
+    },
+    Level {
+        fps_cap: u32::MAX,
+        aux: false,
+        scale: 0.75,
+    },
+    Level {
+        fps_cap: u32::MAX,
+        aux: false,
+        scale: 0.5,
+    },
+    Level {
+        fps_cap: 30,
+        aux: false,
+        scale: 0.5,
+    },
+    Level {
+        fps_cap: 15,
+        aux: false,
+        scale: 0.5,
+    },
+];
+
+/// Low bandwidth: no auxiliary chroma and at most 30 fps from the start,
+/// under [`LOW_BANDWIDTH_CAP`].
+pub const LOW_BANDWIDTH: [Level; 5] = [
+    Level {
+        fps_cap: 30,
+        aux: false,
+        scale: 1.0,
+    },
+    Level {
+        fps_cap: 15,
+        aux: false,
+        scale: 1.0,
+    },
+    Level {
+        fps_cap: 10,
+        aux: false,
+        scale: 1.0,
+    },
+    Level {
+        fps_cap: 10,
+        aux: false,
+        scale: 0.5,
+    },
+    Level {
+        fps_cap: 5,
+        aux: false,
+        scale: 0.5,
+    },
+];
+
+/// The bitrate ceiling of the low bandwidth preset, all streams together.
+pub const LOW_BANDWIDTH_CAP: u32 = 3_000_000;
+
+/// The ladder for a quality preset.
+pub fn levels(mode: gliff_proto::Quality) -> &'static [Level] {
+    match mode {
+        gliff_proto::Quality::Auto => &LEVELS,
+        gliff_proto::Quality::SharpText => &SHARP_TEXT,
+        gliff_proto::Quality::SmoothMotion => &SMOOTH_MOTION,
+        gliff_proto::Quality::LowBandwidth => &LOW_BANDWIDTH,
+    }
+}
+
 /// Picks the quality level the measured rate can pay for, with hysteresis:
 /// step down after a short hold, step up only after `hold_up`, which
 /// doubles when an up-step flaps back down. During slow start, upward
@@ -598,6 +711,13 @@ impl RateController {
 
     fn effective_max(&self) -> u32 {
         self.effective_max_raw().max(self.min)
+    }
+
+    /// Change the upper cap on the target, as `--bitrate` sets it at start.
+    pub fn set_cap(&mut self, cap: Option<u32>) {
+        self.fixed_cap = cap;
+        self.min = self.min.min(self.effective_max_raw()).max(1);
+        self.target = self.target.clamp(self.min, self.effective_max());
     }
 
     /// The stream geometry, stream count or fps ceiling changed: recompute

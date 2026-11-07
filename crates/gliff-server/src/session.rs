@@ -265,6 +265,7 @@ where
         sent_fps_cap: start_fps,
         cursor_shape_id: 0,
         max_fps: MAX_FPS,
+        bitrate_cap: cfg.bitrate,
         target: cfg.target.clone(),
         render_node: cfg.render_node.clone(),
         capture_mode: cfg.capture,
@@ -605,6 +606,8 @@ struct Session {
     cursor_shape_id: u32,
     /// The frame-rate ceiling: MAX_FPS unless the client asked for less.
     max_fps: u32,
+    /// `--bitrate`, the cap a quality preset without one of its own keeps.
+    bitrate_cap: Option<u32>,
     /// What starting the capture and input threads again on another output
     /// needs.
     target: Target,
@@ -751,7 +754,16 @@ impl Session {
             ClientMsg::ListOutputs | ClientMsg::SelectOutput { .. } => {}
             // Handled by the session loop, which owns the lock on disconnect.
             ClientMsg::LockScreen | ClientMsg::LockOnDisconnect { .. } => {}
-            ClientMsg::Quality { .. } => {}
+            ClientMsg::Quality { mode, max_fps } => {
+                if self
+                    .caps
+                    .features
+                    .iter()
+                    .any(|f| f == gliff_proto::FEATURE_QUALITY)
+                {
+                    self.set_quality(mode, max_fps)?;
+                }
+            }
             ClientMsg::Hello { .. } => anyhow::bail!("unexpected second Hello"),
         }
         Ok(ControlFlow::Continue(()))
@@ -900,6 +912,30 @@ impl Session {
         self.capturer().request_frame().ok();
         self.capture_asked = true;
         Ok(Some(rx))
+    }
+
+    /// Follow the client's quality preset: a ladder of its own, a bitrate
+    /// cap for low bandwidth, and a frame-rate ceiling (0 for none).
+    fn set_quality(&mut self, mode: gliff_proto::Quality, max_fps: u32) -> Result<()> {
+        self.max_fps = quality_max_fps(max_fps);
+        let start =
+            usize::from(self.ladder.index() > 0 && mode != gliff_proto::Quality::LowBandwidth);
+        self.ladder = Ladder::with_levels(crate::rate::levels(mode), start);
+        self.ctl.set_cap(match mode {
+            gliff_proto::Quality::LowBandwidth => Some(
+                self.bitrate_cap
+                    .map_or(crate::rate::LOW_BANDWIDTH_CAP, |c| {
+                        c.min(crate::rate::LOW_BANDWIDTH_CAP)
+                    }),
+            ),
+            _ => self.bitrate_cap,
+        });
+        tracing::info!(?mode, max_fps = self.max_fps, "quality");
+        if self.apply_stream_params()? {
+            self.send_config();
+        }
+        self.want_keyframe = true;
+        Ok(())
     }
 
     /// Tell the client the remote's screens and the one shown. A headless
@@ -1957,6 +1993,15 @@ fn setup_output(
     // An output added while the remote sleeps comes up switched off.
     output.awake = Some(KeepAwake::start(instance.clone(), output.name.clone())?);
     Ok(output)
+}
+
+/// The session's frame-rate ceiling for a client's cap, 0 meaning none.
+fn quality_max_fps(asked: u32) -> u32 {
+    if asked == 0 {
+        MAX_FPS
+    } else {
+        asked.clamp(5, MAX_FPS)
+    }
 }
 
 /// An existing monitor, mirrored at its rotated physical size.

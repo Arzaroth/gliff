@@ -1619,7 +1619,7 @@ fn has_visible_shape(argb: &[u8]) -> bool {
 /// (a reduced-resolution stream is stretched to the view box), then divide
 /// by the remote scale, which is what the virtual pointer expects.
 fn to_remote(ui: &App, x: f64, y: f64) -> (f64, f64) {
-    let Some(s) = active(ui) else {
+    let Some(s) = target(ui) else {
         return (0.0, 0.0);
     };
     let (rw, rh) = s.stream_size.get();
@@ -1628,12 +1628,12 @@ fn to_remote(ui: &App, x: f64, y: f64) -> (f64, f64) {
         return (0.0, 0.0);
     }
     let device = device_scale(ui);
-    let (aw, ah) = (ui.video.width() as f64, ui.video.height() as f64);
-    let Some(l) = paintable::layout((vw, vh), device, aw, ah) else {
+    let area = view_area(ui, &s);
+    let Some(l) = paintable::layout((vw, vh), device, area.width, area.height) else {
         return (0.0, 0.0);
     };
-    let vx = (x - l.x) / l.factor * device;
-    let vy = (y - l.y) / l.factor * device;
+    let vx = (x - area.x - l.x) / l.factor * device;
+    let vy = (y - area.y - l.y) / l.factor * device;
     let px = (vx * rw as f64 / vw as f64).clamp(0.0, rw as f64);
     let py = (vy * rh as f64 / vh as f64).clamp(0.0, rh as f64);
     let scale = s.stream_scale.get().max(0.01) as f64;
@@ -1641,8 +1641,37 @@ fn to_remote(ui: &App, x: f64, y: f64) -> (f64, f64) {
 }
 
 fn send(ui: &App, msg: ClientMsg) {
-    if let Some(s) = active(ui) {
+    if let Some(s) = target(ui) {
         send_to(&s, msg);
+    }
+}
+
+/// The session that keyboard and pointer input go to.
+fn target(ui: &App) -> Option<Rc<Session>> {
+    active(ui)
+}
+
+/// The sessions whose pictures the window shows.
+fn shown_sessions(ui: &App) -> Vec<Rc<Session>> {
+    active(ui).into_iter().collect()
+}
+
+/// Where a session's picture is drawn in the video widget, in logical
+/// pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Area {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+fn view_area(ui: &App, _s: &Session) -> Area {
+    Area {
+        x: 0.0,
+        y: 0.0,
+        width: ui.video.width() as f64,
+        height: ui.video.height() as f64,
     }
 }
 
@@ -2247,16 +2276,19 @@ fn install_resize_handler(ui: &Rc<App>) {
 /// differs from the last request. The view comes from the latest
 /// StreamConfig, falling back to the last painted frame.
 fn request_zoom(ui: &App) {
-    let Some(s) = active(ui) else {
-        return;
-    };
+    for s in shown_sessions(ui) {
+        request_session_zoom(ui, &s);
+    }
+}
+
+fn request_session_zoom(ui: &App, s: &Session) {
     let mut view = s.server_view.get();
     if view == (0, 0) {
         view = s.stream_view.get();
     }
     let device = device_scale(ui);
-    let (aw, ah) = (ui.video.width() as f64, ui.video.height() as f64);
-    let want = paintable::layout(view, device, aw, ah).map_or(1, |l| l.zoom());
+    let area = view_area(ui, s);
+    let want = paintable::layout(view, device, area.width, area.height).map_or(1, |l| l.zoom());
     if want == s.zoom.get() {
         return;
     }
@@ -2272,11 +2304,18 @@ fn request_zoom(ui: &App) {
 /// chose to send at reduced resolution is not a size mismatch, and asking
 /// again would fight the server's own choice.
 fn request_resize(ui: &App) {
-    let Some(s) = active(ui) else {
-        return;
-    };
-    let size = ui.view_size.get();
+    for s in shown_sessions(ui) {
+        request_session_resize(ui, &s);
+    }
+}
+
+fn request_session_resize(ui: &App, s: &Session) {
     let scale = device_scale(ui);
+    let area = view_area(ui, s);
+    let size = (
+        (area.width * scale).max(0.0).round() as u32 & !1,
+        (area.height * scale).max(0.0).round() as u32 & !1,
+    );
     if size.0 < 64
         || size.1 < 64
         || (s.resize_scale.get() == scale
@@ -2287,7 +2326,7 @@ fn request_resize(ui: &App) {
     s.resize_requested.set(size);
     s.resize_scale.set(scale);
     send_to(
-        &s,
+        s,
         ClientMsg::Resize {
             width: size.0,
             height: size.1,

@@ -233,3 +233,50 @@ fn same_node(a: &str, b: &str) -> bool {
     };
     name(a).is_some() && name(a) == name(b)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const OUTPUT: &str = "Found \"default\" metadata 40\n\
+        update: id:0 key:'default.configured.audio.source' \
+        value:'{\"name\":\"alsa_input.usb-mic\"}' type:'Spa:String:JSON'\n";
+
+    #[test]
+    fn the_configured_default_is_read_from_pw_metadata() {
+        assert_eq!(
+            parse_default(OUTPUT).as_deref(),
+            Some(r#"{"name":"alsa_input.usb-mic"}"#)
+        );
+        assert_eq!(parse_default("Found \"default\" metadata 40\n"), None);
+    }
+
+    #[test]
+    fn defaults_compare_by_node_name() {
+        assert!(same_node(
+            r#"{"name":"gliff-mic-1"}"#,
+            r#"{ "name": "gliff-mic-1" }"#
+        ));
+        assert!(!same_node(
+            r#"{"name":"gliff-mic-1"}"#,
+            r#"{"name":"gliff-mic-2"}"#
+        ));
+        assert!(!same_node("not json", "not json"));
+    }
+
+    #[test]
+    fn only_the_stream_format_is_accepted() {
+        assert!(check_format(gliff_proto::AudioCodec::Opus, 48_000, 2).is_ok());
+        assert!(check_format(gliff_proto::AudioCodec::Opus, 44_100, 2).is_err());
+        assert!(check_format(gliff_proto::AudioCodec::Opus, 48_000, 1).is_err());
+    }
+
+    #[test]
+    fn the_tunnel_reads_the_fifo_as_a_named_source() {
+        let args = tunnel_args("gliff-mic-7", Path::new("/run/user/1000/gliff-mic-7.fifo"));
+        assert!(args.contains(r#"pipe.filename="/run/user/1000/gliff-mic-7.fifo""#));
+        assert!(args.contains("tunnel.mode=source"));
+        assert!(args.contains("node.name=gliff-mic-7"));
+        assert!(args.contains("audio.format=F32LE audio.rate=48000 audio.channels=2"));
+    }
+}

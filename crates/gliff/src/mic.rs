@@ -127,3 +127,29 @@ fn parse_default_name(output: &str) -> Option<String> {
 fn is_gliff_source(name: &str) -> bool {
     name.starts_with(SERVER_NODE_PREFIX)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_default_source_name_is_read_from_pw_metadata() {
+        let out = "Found \"default\" metadata 40\n\
+            update: id:0 key:'default.audio.source' \
+            value:'{\"name\":\"bluez_input.98:FD\"}' type:'Spa:String:JSON'\n";
+        assert_eq!(
+            parse_default_name(out).as_deref(),
+            Some("bluez_input.98:FD")
+        );
+        assert_eq!(parse_default_name(""), None);
+    }
+
+    #[test]
+    fn a_gliff_microphone_is_never_recorded() {
+        assert!(is_gliff_source("gliff-mic-4242"));
+        assert!(!is_gliff_source("gliff-capture"));
+        assert!(!is_gliff_source(
+            "alsa_input.pci-0000_c1_00.6.analog-stereo"
+        ));
+    }
+}

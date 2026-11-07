@@ -791,6 +791,22 @@ mod tests {
             ),
             (ClientMsg::RequestKeyframe, "820780"),
             (ClientMsg::Audio { enabled: true }, "821181f5"),
+            (
+                ClientMsg::MicStart {
+                    codec: AudioCodec::Opus,
+                    sample_rate: 48000,
+                    channels: 2,
+                },
+                "8212830019bb8002",
+            ),
+            (
+                ClientMsg::MicFrame {
+                    seq: 7,
+                    data_len: 160,
+                },
+                "8213820718a0",
+            ),
+            (ClientMsg::MicStop, "821480"),
         ];
         for (msg, bytes) in client {
             assert_eq!(hex(&minicbor::to_vec(&msg).unwrap()), bytes, "{msg:?}");

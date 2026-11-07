@@ -120,6 +120,11 @@ without moving the pointer. `--release-hotkey` changes that key (`ctrl+alt+q`,
 - *View only* stops sending your keyboard and pointer, to watch without
   touching anything. The window then leaves the keyboard alone, so your
   own shortcuts keep working with the pointer over the picture.
+- *Quality* picks what the stream gives up first when the link is short:
+  *Automatic* (frame rate, then colour detail, then resolution), *Sharp
+  text* (never resolution), *Smooth motion* (frame rate last) or *Low
+  bandwidth* (30 fps in 4:2:0 under 3 Mbit/s from the start), with a
+  frame-rate cap. Each machine keeps its own choice.
 - *Send keys* sends a shortcut your own desktop would keep for itself:
   Super, Alt+Tab, Shift+Esc, Ctrl+Alt+Delete or Print Screen.
 - *Lock remote screen* locks the shown machine now, and *Lock when

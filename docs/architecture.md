@@ -313,6 +313,21 @@ Every crate with `unsafe` documents the safety requirements at each block.
   and the protocol single-stream, and give each screen its own rate
   control over its own TCP stream.
 
+- **Quality presets.** A server that listed the `quality` feature follows
+  `ClientMsg::Quality`: each preset is its own ladder of levels
+  (`rate::levels`) that the same `Ladder` hysteresis walks, so the rate
+  measurement and the step rules do not change, only what a step gives
+  up. Sharp text drops frame rate down to 5 fps and colour detail last,
+  never resolution; smooth motion drops colour detail, then resolution
+  (0.75, then 0.5), and frame rate only at the bottom; low bandwidth
+  starts at 30 fps in 4:2:0 and caps the rate controller at 3 Mbit/s
+  (`RateController::set_cap`, or `--bitrate` when lower). The frame-rate
+  cap lowers `Session::max_fps`, which bounds every level, the rate
+  controller's budget and the pace. A switch starts the new ladder at its
+  second level unless the old one was at the top, and restarts the stream
+  from a keyframe. The client keeps the preset per machine and sends it
+  on each connection.
+
 - **Screen lock.** A server that listed the `lock` feature reads the user's
   graphical session from logind (`loginctl show-user <uid> -p Display`)
   and runs `loginctl lock-session` on it, for `ClientMsg::LockScreen` and,
@@ -431,7 +446,7 @@ Not yet built, roughly in priority order:
    answered with a fresh keyframe rather than a retransmit. `LinkEstimator`,
    `RateController` and the ladder already take transport-neutral inputs
    (bytes sent, acks, a blocked marker) and carry over unchanged.
-4. **Polish**: a `--max-fps` server flag, and a
+4. **Polish**: a
    lazy file spool (a FUSE mount the pasting application
    reads through, so its own copy dialog shows progress, instead of
    spooling every file before the URI list is handed over).

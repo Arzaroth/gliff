@@ -9,6 +9,7 @@ mod clipboard;
 mod lock;
 mod mic;
 mod notify;
+mod privacy;
 mod rate;
 mod session;
 mod writer;

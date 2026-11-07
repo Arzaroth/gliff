@@ -892,10 +892,13 @@ dependencies = [
  "hypr-ipc",
  "hypr-wl",
  "nix",
+ "rustix 1.1.4",
  "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "wayland-client",
+ "wayland-protocols-wlr",
 ]
 
 [[package]]

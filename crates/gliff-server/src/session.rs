@@ -301,6 +301,12 @@ where
         .iter()
         .any(|feature| feature == gliff_proto::FEATURE_LOCK);
     let mut lock_on_end = crate::lock::LockOnEnd::default();
+    let privacy_supported = session
+        .caps
+        .features
+        .iter()
+        .any(|feature| feature == gliff_proto::FEATURE_PRIVACY);
+    let mut privacy: Option<crate::privacy::Privacy> = None;
     loop {
         let flow = tokio::select! {
             msg = msg_rx.recv() => match msg {
@@ -330,6 +336,12 @@ where
                             ));
                         }
                         session.send_outputs();
+                    }
+                    ControlFlow::Continue(())
+                }
+                Some(Inbound::Msg(ClientMsg::Privacy { enabled })) => {
+                    if privacy_supported {
+                        privacy = session.set_privacy(enabled, privacy.take());
                     }
                     ControlFlow::Continue(())
                 }
@@ -435,6 +447,7 @@ where
         session.pump_encoder()?;
     }
 
+    drop(privacy);
     // Dropping the session ends it in order; see `impl Drop for Session`.
     drop(session);
     Ok(())
@@ -754,6 +767,7 @@ impl Session {
             ClientMsg::ListOutputs | ClientMsg::SelectOutput { .. } => {}
             // Handled by the session loop, which owns the lock on disconnect.
             ClientMsg::LockScreen | ClientMsg::LockOnDisconnect { .. } => {}
+            // Handled by the session loop, which owns the covers.
             ClientMsg::Privacy { .. } => {}
             ClientMsg::Quality { mode, max_fps } => {
                 if self
@@ -913,6 +927,33 @@ impl Session {
         self.capturer().request_frame().ok();
         self.capture_asked = true;
         Ok(Some(rx))
+    }
+
+    /// Cover or uncover the remote's other screens, only while this session
+    /// shows a private one, and tell the client the outcome.
+    fn set_privacy(
+        &mut self,
+        enabled: bool,
+        current: Option<crate::privacy::Privacy>,
+    ) -> Option<crate::privacy::Privacy> {
+        let next = match (enabled && self.output.is_headless(), current) {
+            (false, _) => None,
+            (true, Some(covers)) => Some(covers),
+            (true, None) => match crate::privacy::Privacy::start(&self.target, &self.output.name) {
+                Ok(covers) => Some(covers),
+                Err(e) => {
+                    tracing::warn!(error = %format!("{e:#}"), "cannot turn privacy mode on");
+                    None
+                }
+            },
+        };
+        self.writer.send(
+            ServerMsg::Privacy {
+                enabled: next.is_some(),
+            },
+            Vec::new(),
+        );
+        next
     }
 
     /// Follow the client's quality preset: a ladder of its own, a bitrate

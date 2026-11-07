@@ -8,6 +8,7 @@
 mod clipboard;
 mod clipboard_ui;
 mod keymap;
+mod mic;
 mod net;
 mod paintable;
 mod recent;
@@ -84,6 +85,15 @@ struct Cli {
     /// it on and off, and the window remembers the choice.
     #[arg(long)]
     no_audio: bool,
+    /// Start with this machine's microphone on. The header's microphone
+    /// button turns it on and off; it is sent to the shown machine only.
+    #[arg(long)]
+    mic: bool,
+    /// The input the microphone button records, as a PipeWire node name
+    /// (`wpctl status` lists them), such as an echo-cancelled source.
+    /// Defaults to the default input when the microphone turns on.
+    #[arg(long, value_name = "NODE")]
+    mic_source: Option<String>,
 }
 
 /// Everything the UI shares with its callbacks.
@@ -129,6 +139,8 @@ struct App {
     view_scale: Cell<f64>,
     /// Plays the shown machine's sound while active.
     sound_btn: gtk::ToggleButton,
+    /// Sends this machine's microphone to the shown machine while active.
+    mic_btn: gtk::ToggleButton,
     /// Evdev codes currently held on the remote, so they can all be released
     /// when the keyboard is handed back to the local compositor.
     pressed_keys: RefCell<BTreeSet<u32>>,
@@ -333,6 +345,10 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
         .icon_name("audio-volume-high-symbolic")
         .tooltip_text("Play the remote's sound")
         .build();
+    let mic_btn = gtk::ToggleButton::builder()
+        .icon_name("microphone-sensitivity-muted-symbolic")
+        .tooltip_text("Send your microphone")
+        .build();
     let tabs = gtk::Box::builder().spacing(6).build();
     let tabs_scroller = gtk::ScrolledWindow::builder()
         .child(&tabs)
@@ -346,6 +362,7 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
     header.pack_end(&fullscreen_btn);
     header.pack_end(&stats_btn);
     header.pack_end(&sound_btn);
+    header.pack_end(&mic_btn);
 
     let stats = gtk::Label::builder()
         .halign(gtk::Align::Start)
@@ -429,6 +446,7 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
         view_size: Cell::new((0, 0)),
         view_scale: Cell::new(1.0),
         sound_btn: sound_btn.clone(),
+        mic_btn: mic_btn.clone(),
         pressed_keys: RefCell::new(BTreeSet::new()),
         released: Cell::new(false),
         config_path: Config::default_path(),
@@ -443,6 +461,7 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
     install_input_handlers(&ui, &video, &window, hotkey);
     install_resize_handler(&ui);
     install_sound_button(&ui);
+    install_mic_button(&ui);
     install_address_bar(&ui, &connect_btn);
     refresh_tabs(&ui);
 
@@ -1001,6 +1020,7 @@ fn show_session(ui: &Rc<App>, s: &Rc<Session>) {
     request_resize(ui);
     request_zoom(ui);
     update_sound(ui);
+    update_mic(ui);
     refresh_tabs(ui);
 }
 
@@ -1015,6 +1035,7 @@ fn show_nothing(ui: &Rc<App>) {
     ui.frame.clear();
     ui.video.set_cursor(None);
     update_sound(ui);
+    update_mic(ui);
     refresh_tabs(ui);
 }
 
@@ -1175,6 +1196,7 @@ fn start_session(ui: Rc<App>, s: Rc<Session>) {
         .expect("spawn network thread");
 
     update_sound(&ui);
+    update_mic(&ui);
     poll_frames(ui.clone(), s.clone(), frame_rx, generation);
     poll_status(ui, s, status_rx, generation);
 }
@@ -2284,6 +2306,48 @@ fn set_sound_icon(btn: &gtk::ToggleButton, on: bool) {
     } else {
         "Play the remote's sound"
     }));
+}
+
+/// The microphone button: on sends this machine's microphone to the shown
+/// machine. It starts off unless `--mic` is given, and is not remembered.
+fn install_mic_button(ui: &Rc<App>) {
+    set_mic_icon(&ui.mic_btn, ui.cli.mic);
+    ui.mic_btn.set_active(ui.cli.mic);
+    let weak = Rc::downgrade(ui);
+    ui.mic_btn.connect_toggled(move |btn| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        set_mic_icon(btn, btn.is_active());
+        update_mic(&ui);
+    });
+}
+
+fn set_mic_icon(btn: &gtk::ToggleButton, on: bool) {
+    btn.set_icon_name(if on {
+        "microphone-sensitivity-high-symbolic"
+    } else {
+        "microphone-sensitivity-muted-symbolic"
+    });
+    btn.set_tooltip_text(Some(if on {
+        "Mute your microphone"
+    } else {
+        "Send your microphone"
+    }));
+}
+
+/// Only the shown session gets the microphone, and only while the button is
+/// on.
+fn update_mic(ui: &App) {
+    let on = ui.mic_btn.is_active();
+    for s in ui.sessions.borrow().iter() {
+        if let Some(tx) = s.input_tx.borrow().as_ref() {
+            let _ = tx.send(clipboard::ToWorker::Mic {
+                on: on && is_active(ui, s),
+                source: ui.cli.mic_source.clone(),
+            });
+        }
+    }
 }
 
 /// Only the shown session plays sound, and only while the button is on;

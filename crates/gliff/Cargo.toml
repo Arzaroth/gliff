@@ -23,6 +23,7 @@ gliff-vk.workspace = true
 gliff-sw.workspace = true
 hypr-capture.workspace = true
 gliff-audio = { workspace = true, features = ["player"] }
+serde_json.workspace = true
 bytes.workspace = true
 drm-fourcc.workspace = true
 hypr-ipc.workspace = true

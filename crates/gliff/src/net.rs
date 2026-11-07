@@ -14,7 +14,7 @@ use bytes::Bytes;
 use gliff_proto::clipboard::CHUNK;
 use gliff_proto::{
     features, is_incompatible, version_mismatch, ChromaMode, ClientCaps, ClientMsg, ClipboardFile,
-    ClipboardMsg, Codec, ServerMsg, VideoPipeline, FEATURE_AUDIO, PROTOCOL_VERSION,
+    ClipboardMsg, Codec, ServerMsg, VideoPipeline, FEATURE_AUDIO, FEATURE_MIC, PROTOCOL_VERSION,
 };
 use gliff_sw::VideoMode;
 use gliff_transport::clipboard::progress::Progress;
@@ -491,6 +491,7 @@ where
     let mut got_ack = false;
     let mut headless = false;
     let mut server_audio = false;
+    let mut server_mic = false;
     let (mut cfg, pipeline) = loop {
         match reader.read_msg::<ServerMsg>().await? {
             ServerMsg::HelloAck {
@@ -507,6 +508,7 @@ where
                 tracing::debug!(?features, "server features");
                 headless = session.headless;
                 server_audio = features.iter().any(|f| f == FEATURE_AUDIO);
+                server_mic = features.iter().any(|f| f == FEATURE_MIC);
                 got_ack = true;
             }
             ServerMsg::Ping { t } => writer.write_msg(&ClientMsg::Pong { t }).await?,
@@ -596,6 +598,7 @@ where
     let (zoom_tx, mut zoom_rx) = unbounded_channel::<u32>();
     // Whether the UI wants this session's sound; the main loop owns it.
     let (audio_tx, mut audio_rx) = unbounded_channel::<bool>();
+    let (mic_tx, mut mic_rx) = unbounded_channel::<(bool, Option<String>)>();
     {
         let out_tx = out_tx.clone();
         let clipboard = clipboard.clone();
@@ -621,6 +624,10 @@ where
                         }
                         Some(ToWorker::Audio(on)) => {
                             let _ = audio_tx.send(on);
+                            continue;
+                        }
+                        Some(ToWorker::Mic { on, source }) => {
+                            let _ = mic_tx.send((on, source));
                             continue;
                         }
                         Some(other) => {
@@ -667,6 +674,7 @@ where
     // the UI wants it; the device opens when the stream starts.
     let mut audio_on = false;
     let mut sound = gliff_audio::Sink::default();
+    let mut mic: Option<crate::mic::Capture> = None;
     loop {
         let read = tokio::select! {
             read = reader.read_msg::<ServerMsg>() => read,
@@ -679,6 +687,26 @@ where
                     if !on {
                         sound.stop();
                     }
+                }
+                continue;
+            }
+            Some((on, source)) = mic_rx.recv() => {
+                if server_mic && on != mic.is_some() {
+                    mic = if on {
+                        start_mic(source.as_deref(), &out_tx)
+                    } else {
+                        stop_mic(&out_tx)
+                    };
+                }
+                continue;
+            }
+            packet = async { mic.as_mut()?.packets.recv().await }, if mic.is_some() => {
+                match packet {
+                    Some((seq, data)) => {
+                        let msg = ClientMsg::MicFrame { seq, data_len: data.len() as u32 };
+                        let _ = out_tx.send((msg, Bytes::from(data)));
+                    }
+                    None => mic = stop_mic(&out_tx),
                 }
                 continue;
             }
@@ -987,6 +1015,36 @@ where
         }
     }
     Ok(())
+}
+
+fn start_mic(
+    source: Option<&str>,
+    out_tx: &tokio::sync::mpsc::UnboundedSender<(ClientMsg, Bytes)>,
+) -> Option<crate::mic::Capture> {
+    match crate::mic::Capture::start(source) {
+        Ok(capture) => {
+            tracing::info!("microphone on");
+            let msg = ClientMsg::MicStart {
+                codec: gliff_proto::AudioCodec::Opus,
+                sample_rate: gliff_audio::SAMPLE_RATE,
+                channels: gliff_audio::CHANNELS as u32,
+            };
+            let _ = out_tx.send((msg, Bytes::new()));
+            Some(capture)
+        }
+        Err(e) => {
+            tracing::warn!(error = %format!("{e:#}"), "microphone unavailable");
+            None
+        }
+    }
+}
+
+fn stop_mic(
+    out_tx: &tokio::sync::mpsc::UnboundedSender<(ClientMsg, Bytes)>,
+) -> Option<crate::mic::Capture> {
+    tracing::info!("microphone off");
+    let _ = out_tx.send((ClientMsg::MicStop, Bytes::new()));
+    None
 }
 
 fn now_ms() -> u64 {

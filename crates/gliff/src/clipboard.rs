@@ -67,6 +67,13 @@ pub enum ToWorker {
     /// Play the server's sound or not: on for the shown session while the
     /// header's sound button is on.
     Audio(bool),
+    /// Send this machine's microphone or not: on for the shown session while
+    /// the header's microphone button is on. `source` names the input to
+    /// record, or `None` for the default one.
+    Mic {
+        on: bool,
+        source: Option<String>,
+    },
 }
 
 #[derive(Default)]
@@ -203,7 +210,7 @@ impl Bridge {
     /// A clipboard command from the UI; `Send` is handled by the caller.
     pub fn on_ui(&self, cmd: ToWorker) {
         match cmd {
-            ToWorker::Send(_) | ToWorker::Zoom(_) | ToWorker::Audio(_) => {}
+            ToWorker::Send(_) | ToWorker::Zoom(_) | ToWorker::Audio(_) | ToWorker::Mic { .. } => {}
             ToWorker::RevokeLocal => {
                 self.local_serial.set(None);
                 self.local_mimes.borrow_mut().clear();

@@ -54,6 +54,9 @@ pub const FEATURE_OUTPUTS: &str = "outputs";
 /// `LockOnDisconnect` has the server lock it when the connection ends.
 pub const FEATURE_LOCK: &str = "lock";
 
+/// Steering the stream's quality: `ClientMsg::Quality`.
+pub const FEATURE_QUALITY: &str = "quality";
+
 pub fn features() -> Vec<String> {
     FEATURES.iter().map(|f| f.to_string()).collect()
 }
@@ -129,6 +132,27 @@ pub enum ChromaMode {
     /// Low-bandwidth fallback only.
     #[n(2)]
     Single420,
+}
+
+/// What the stream gives up first when the link cannot pay for full
+/// quality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Encode, Decode)]
+#[cbor(index_only)]
+pub enum Quality {
+    /// The server's own policy: frame rate, then colour detail, then
+    /// resolution.
+    #[default]
+    #[n(0)]
+    Auto,
+    /// Never resolution: frame rate all the way down, colour detail last.
+    #[n(1)]
+    SharpText,
+    /// Frame rate last: colour detail, then resolution.
+    #[n(2)]
+    SmoothMotion,
+    /// Start reduced and cap the bitrate.
+    #[n(3)]
+    LowBandwidth,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
@@ -383,6 +407,15 @@ pub enum ClientMsg {
     LockOnDisconnect {
         #[n(0)]
         enabled: bool,
+    },
+    /// How the stream adapts to the link, and a frame-rate ceiling (0 for
+    /// none). Sent only to a server that listed [`FEATURE_QUALITY`].
+    #[n(25)]
+    Quality {
+        #[n(0)]
+        mode: Quality,
+        #[n(1)]
+        max_fps: u32,
     },
 }
 

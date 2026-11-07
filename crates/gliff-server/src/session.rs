@@ -264,6 +264,7 @@ where
         base_chroma: chroma,
         sent_fps_cap: start_fps,
         cursor_shape_id: 0,
+        max_fps: MAX_FPS,
         target: cfg.target.clone(),
         render_node: cfg.render_node.clone(),
         capture_mode: cfg.capture,
@@ -602,6 +603,8 @@ struct Session {
     /// still reaches the client.
     sent_fps_cap: u32,
     cursor_shape_id: u32,
+    /// The frame-rate ceiling: MAX_FPS unless the client asked for less.
+    max_fps: u32,
     /// What starting the capture and input threads again on another output
     /// needs.
     target: Target,
@@ -661,7 +664,7 @@ impl Session {
                     pixels,
                     dual,
                     can_drop_aux,
-                    MAX_FPS,
+                    self.max_fps,
                 ) {
                     tracing::info!(
                         level,
@@ -1173,7 +1176,7 @@ impl Session {
 
     /// The ladder level's frame-rate ceiling, bounded by the session's.
     fn fps_cap(&self) -> u32 {
-        self.ladder.level().fps_cap.min(MAX_FPS)
+        self.ladder.level().fps_cap.min(self.max_fps)
     }
 
     /// A rung may only drop the auxiliary stream when the client can
@@ -1241,7 +1244,7 @@ impl Session {
         }
         let streams = if chroma == ChromaMode::Dual420 { 2 } else { 1 };
         self.ctl
-            .reconfigure(want.0 as u64 * want.1 as u64, streams, MAX_FPS);
+            .reconfigure(want.0 as u64 * want.1 as u64, streams, self.max_fps);
         let settings = encoder_settings(
             want.0,
             want.1,
@@ -1334,7 +1337,7 @@ impl Session {
         self.ctl.reconfigure(
             self.stream.0 as u64 * self.stream.1 as u64,
             streams,
-            MAX_FPS,
+            self.max_fps,
         );
         self.settings = encoder_settings(
             self.stream.0,

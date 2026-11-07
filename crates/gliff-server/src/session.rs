@@ -2123,6 +2123,26 @@ mod tests {
     }
 
     #[test]
+    fn a_rotated_monitor_is_mirrored_at_its_rotated_size() {
+        let monitor = |transform: i32| -> hypr_ipc::Monitor {
+            serde_json::from_value(serde_json::json!({
+                "id": 1, "name": "DP-2", "width": 2561, "height": 1440,
+                "scale": 1.25, "transform": transform,
+            }))
+            .unwrap()
+        };
+        let upright = mirrored_output(&monitor(0));
+        assert_eq!((upright.width, upright.height), (2560, 1440));
+        let rotated = mirrored_output(&monitor(1));
+        assert_eq!(
+            (rotated.name.as_str(), rotated.width, rotated.height),
+            ("DP-2", 1440, 2560)
+        );
+        assert_eq!(rotated.scale, 1.25);
+        assert!(!rotated.is_headless());
+    }
+
+    #[test]
     fn only_the_requested_output_is_adopted() {
         let result = wait_for_output("gliff-42", Duration::ZERO, || {
             Ok(vec!["DP-2".into(), "gliff-420".into(), "gliff-99".into()])

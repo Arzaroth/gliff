@@ -304,6 +304,25 @@ mod tests {
     }
 
     #[test]
+    fn only_the_newest_output_list_waits() {
+        let mut queue = Queue::default();
+        for current in ["DP-1", "DP-2", "HDMI-A-1"] {
+            queue.push(
+                ServerMsg::Outputs {
+                    outputs: Vec::new(),
+                    current: current.into(),
+                    selectable: true,
+                },
+                Vec::new(),
+            );
+        }
+        assert_eq!(queue.packets.len(), 1);
+        assert!(
+            matches!(&queue.packets[0].0, ServerMsg::Outputs { current, .. } if current == "HDMI-A-1")
+        );
+    }
+
+    #[test]
     fn clipboard_messages_queue_in_order_without_coalescing() {
         let mut queue = Queue::default();
         for id in 0..3 {

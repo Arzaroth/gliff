@@ -834,6 +834,13 @@ mod tests {
                 "8213820718a0",
             ),
             (ClientMsg::MicStop, "821480"),
+            (ClientMsg::ListOutputs, "821580"),
+            (
+                ClientMsg::SelectOutput {
+                    name: "DP-1".into(),
+                },
+                "8216816444502d31",
+            ),
         ];
         for (msg, bytes) in client {
             assert_eq!(hex(&minicbor::to_vec(&msg).unwrap()), bytes, "{msg:?}");
@@ -903,6 +910,19 @@ mod tests {
                     data_len: 160,
                 },
                 "820e820718a0",
+            ),
+            (
+                ServerMsg::Outputs {
+                    outputs: vec![OutputInfo {
+                        name: "DP-1".into(),
+                        width: 2560,
+                        height: 1440,
+                        scale_milli: 1000,
+                    }],
+                    current: "DP-1".into(),
+                    selectable: true,
+                },
+                "820f8381846444502d31190a001905a01903e86444502d31f5",
             ),
         ];
         for (msg, bytes) in server {

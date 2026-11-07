@@ -298,6 +298,21 @@ Every crate with `unsafe` documents the safety requirements at each block.
   start. The writer keeps only the newest queued `Outputs`. A headless
   session lists only its own screen and refuses to switch.
 
+- **All screens.** Client-side only, on top of screen selection: the tab's
+  session is pinned to its screen and one extra session, a full connection
+  with its own server, is pinned to each other screen. A pinned session
+  sends `SelectOutput` whenever `Outputs` names another screen as current,
+  so it finds its screen again after a reconnect, and paints nothing until
+  it is there. `Outputs` carries each screen's logical top-left corner;
+  `paintable::arrange` fits those rectangles into the widget, and the same
+  areas drive drawing, pointer mapping, Resize and decoder zoom per
+  session. Input goes to the session under the pointer, and held keys are
+  released on the previous one. Extra sessions have no tab and never get
+  `Audio`, `Mic` or clipboard traffic, which follow the tab's session.
+  Several connections rather than several streams in one keep the server
+  and the protocol single-stream, and give each screen its own rate
+  control over its own TCP stream.
+
 - **Microphone.** The same format the other way. A client sends
   `ClientMsg::MicStart`, one `MicFrame` per 10 ms Opus packet and then
   `MicStop`, only to a server that listed the `mic` feature and only for

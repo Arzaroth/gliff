@@ -63,7 +63,10 @@ impl Queue {
                     ServerMsg::CursorShape { .. } | ServerMsg::CursorPos { .. }
                 )
             }),
-            ServerMsg::CursorPos { .. } | ServerMsg::Pong { .. } | ServerMsg::Ping { .. } => {
+            ServerMsg::CursorPos { .. }
+            | ServerMsg::Pong { .. }
+            | ServerMsg::Ping { .. }
+            | ServerMsg::Outputs { .. } => {
                 self.packets.retain(|(queued, _)| {
                     std::mem::discriminant(queued) != std::mem::discriminant(&msg)
                 });

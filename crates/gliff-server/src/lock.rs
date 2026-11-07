@@ -52,3 +52,21 @@ fn parse_session(output: &str) -> Option<String> {
     let id = output.trim();
     (!id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric())).then(|| id.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_display_session_is_a_plain_session_id() {
+        assert_eq!(parse_session("2\n").as_deref(), Some("2"));
+        assert_eq!(parse_session("c3\n").as_deref(), Some("c3"));
+        assert_eq!(parse_session("\n"), None);
+        assert_eq!(parse_session("2; rm -rf /"), None);
+    }
+
+    #[test]
+    fn an_unarmed_guard_does_not_lock() {
+        drop(LockOnEnd::default());
+    }
+}

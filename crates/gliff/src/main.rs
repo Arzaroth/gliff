@@ -2909,6 +2909,22 @@ fn update_sound(ui: &App) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_key_combo_is_held_in_order_and_released_in_reverse() {
+        assert_eq!(
+            combo_events(&[29, 56, 111]),
+            vec![
+                (29, true),
+                (56, true),
+                (111, true),
+                (111, false),
+                (56, false),
+                (29, false)
+            ]
+        );
+        assert!(KEY_COMBOS.iter().all(|(_, codes)| !codes.is_empty()));
+    }
+
     fn output(
         name: &str,
         size: (u32, u32),

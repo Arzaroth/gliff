@@ -856,6 +856,8 @@ mod tests {
             ),
             (ClientMsg::MicStop, "821480"),
             (ClientMsg::ListOutputs, "821580"),
+            (ClientMsg::LockScreen, "821780"),
+            (ClientMsg::LockOnDisconnect { enabled: true }, "82181881f5"),
             (
                 ClientMsg::SelectOutput {
                     name: "DP-1".into(),

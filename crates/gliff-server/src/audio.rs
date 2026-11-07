@@ -112,7 +112,7 @@ fn offer(tx: &mpsc::Sender<(u32, Vec<u8>)>, seq: &mut u32, packet: Vec<u8>) -> b
 /// A command that finds the sound server: Tailscale SSH starts commands
 /// without `XDG_RUNTIME_DIR`, and every PipeWire and PulseAudio tool looks
 /// for its socket there.
-fn command(program: &str) -> std::process::Command {
+pub(crate) fn command(program: &str) -> std::process::Command {
     let mut cmd = std::process::Command::new(program);
     cmd.stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());

@@ -6,6 +6,7 @@
 
 mod audio;
 mod clipboard;
+mod mic;
 mod notify;
 mod rate;
 mod session;

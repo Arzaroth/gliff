@@ -141,6 +141,9 @@ struct App {
     sound_btn: gtk::ToggleButton,
     /// Sends this machine's microphone to the shown machine while active.
     mic_btn: gtk::ToggleButton,
+    /// Picks the remote screen the shown session mirrors.
+    screen_btn: gtk::MenuButton,
+    screen_list: gtk::Box,
     /// Evdev codes currently held on the remote, so they can all be released
     /// when the keyboard is handed back to the local compositor.
     pressed_keys: RefCell<BTreeSet<u32>>,
@@ -177,6 +180,11 @@ struct Session {
     /// The server is streaming: set by its Connected status, cleared when
     /// the connection drops.
     connected: Cell<bool>,
+    /// The remote's screens, the one shown and whether it can switch, from
+    /// the server's last Outputs; empty while disconnected.
+    outputs: RefCell<Vec<gliff_proto::OutputInfo>>,
+    current_output: RefCell<String>,
+    outputs_selectable: Cell<bool>,
     /// The server streams a dedicated headless output: its frames carry the
     /// compositor-drawn cursor, so the local pointer is hidden over the video.
     headless: Cell<bool>,
@@ -223,6 +231,9 @@ impl Session {
             gave_up: Cell::new(false),
             remembered: Cell::new(false),
             connected: Cell::new(false),
+            outputs: RefCell::new(Vec::new()),
+            current_output: RefCell::new(String::new()),
+            outputs_selectable: Cell::new(false),
             headless: Cell::new(false),
             stream_size: Cell::new((0, 0)),
             stream_view: Cell::new((0, 0)),
@@ -349,6 +360,16 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
         .icon_name("microphone-sensitivity-muted-symbolic")
         .tooltip_text("Send your microphone")
         .build();
+    let screen_list = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(2)
+        .build();
+    let screen_btn = gtk::MenuButton::builder()
+        .icon_name("video-display-symbolic")
+        .tooltip_text("Choose the remote screen")
+        .popover(&gtk::Popover::builder().child(&screen_list).build())
+        .visible(false)
+        .build();
     let tabs = gtk::Box::builder().spacing(6).build();
     let tabs_scroller = gtk::ScrolledWindow::builder()
         .child(&tabs)
@@ -363,6 +384,7 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
     header.pack_end(&stats_btn);
     header.pack_end(&sound_btn);
     header.pack_end(&mic_btn);
+    header.pack_end(&screen_btn);
 
     let stats = gtk::Label::builder()
         .halign(gtk::Align::Start)
@@ -447,6 +469,8 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
         view_scale: Cell::new(1.0),
         sound_btn: sound_btn.clone(),
         mic_btn: mic_btn.clone(),
+        screen_btn: screen_btn.clone(),
+        screen_list,
         pressed_keys: RefCell::new(BTreeSet::new()),
         released: Cell::new(false),
         config_path: Config::default_path(),
@@ -462,6 +486,7 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
     install_resize_handler(&ui);
     install_sound_button(&ui);
     install_mic_button(&ui);
+    install_screen_menu(&ui);
     install_address_bar(&ui, &connect_btn);
     refresh_tabs(&ui);
 
@@ -810,6 +835,7 @@ fn tab_names(ui: &App) -> Vec<String> {
 
 /// Rebuild the tabs from the config and the running sessions.
 fn refresh_tabs(ui: &Rc<App>) {
+    refresh_screens(ui);
     while let Some(tab) = ui.tabs.first_child() {
         ui.tabs.remove(&tab);
     }
@@ -1147,6 +1173,7 @@ fn show_disconnected(ui: &Rc<App>, s: &Rc<Session>) {
     s.stream_view.set((0, 0));
     s.server_view.set((0, 0));
     s.cursor.borrow_mut().take();
+    s.outputs.borrow_mut().clear();
     ui.transfers.clear_connection(s.conn.get());
     set_stats(ui, s, "");
     if is_active(ui, s) {
@@ -1487,6 +1514,18 @@ fn poll_status(ui: Rc<App>, s: Rc<Session>, rx: Receiver<Status>, generation: u6
                     show_disconnected(&ui, &s);
                     s.gave_up.set(true);
                     return glib::ControlFlow::Break;
+                }
+                Status::Outputs {
+                    outputs,
+                    current,
+                    selectable,
+                } => {
+                    *s.outputs.borrow_mut() = outputs;
+                    *s.current_output.borrow_mut() = current;
+                    s.outputs_selectable.set(selectable);
+                    if is_active(&ui, &s) {
+                        refresh_screens(&ui);
+                    }
                 }
                 Status::Closed => {
                     show_disconnected(&ui, &s);
@@ -2306,6 +2345,61 @@ fn set_sound_icon(btn: &gtk::ToggleButton, on: bool) {
     } else {
         "Play the remote's sound"
     }));
+}
+
+/// The screen menu asks the shown machine for its screens each time it
+/// opens, so it lists monitors plugged in since.
+fn install_screen_menu(ui: &Rc<App>) {
+    let weak = Rc::downgrade(ui);
+    let popover = ui
+        .screen_btn
+        .popover()
+        .expect("the screen menu has a popover");
+    popover.connect_show(move |_| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        send(&ui, ClientMsg::ListOutputs);
+    });
+}
+
+/// Show the screen menu for the shown session when it has screens to pick
+/// from, and list them with the current one checked.
+fn refresh_screens(ui: &Rc<App>) {
+    let shown = active(ui).filter(|s| s.connected.get() && s.outputs_selectable.get());
+    let outputs = shown
+        .as_ref()
+        .map(|s| s.outputs.borrow().clone())
+        .unwrap_or_default();
+    ui.screen_btn.set_visible(outputs.len() > 1);
+    while let Some(child) = ui.screen_list.first_child() {
+        ui.screen_list.remove(&child);
+    }
+    let Some(s) = shown else {
+        return;
+    };
+    let current = s.current_output.borrow().clone();
+    for output in outputs {
+        let row = gtk::Box::builder().spacing(8).build();
+        let check = gtk::Image::from_icon_name("object-select-symbolic");
+        check.set_opacity(if output.name == current { 1.0 } else { 0.0 });
+        row.append(&check);
+        row.append(&gtk::Label::new(Some(&format!(
+            "{}  {}×{}",
+            output.name, output.width, output.height
+        ))));
+        let button = gtk::Button::builder().child(&row).has_frame(false).build();
+        let weak = Rc::downgrade(ui);
+        let name = output.name.clone();
+        button.connect_clicked(move |_| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            ui.screen_btn.popdown();
+            send(&ui, ClientMsg::SelectOutput { name: name.clone() });
+        });
+        ui.screen_list.append(&button);
+    }
 }
 
 /// The microphone button: on sends this machine's microphone to the shown

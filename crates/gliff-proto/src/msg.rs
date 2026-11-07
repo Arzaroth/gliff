@@ -917,6 +917,7 @@ mod tests {
             (ClientMsg::MicStop, "821480"),
             (ClientMsg::ListOutputs, "821580"),
             (ClientMsg::LockScreen, "821780"),
+            (ClientMsg::Privacy { enabled: true }, "82181a81f5"),
             (
                 ClientMsg::Quality {
                     mode: Quality::SharpText,
@@ -1018,6 +1019,7 @@ mod tests {
                 },
                 "820f8381846444502d31190a001905a01903e86444502d31f5",
             ),
+            (ServerMsg::Privacy { enabled: false }, "821081f4"),
         ];
         for (msg, bytes) in server {
             assert_eq!(hex(&minicbor::to_vec(&msg).unwrap()), bytes, "{msg:?}");

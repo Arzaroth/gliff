@@ -118,7 +118,8 @@ without moving the pointer. `--release-hotkey` changes that key (`ctrl+alt+q`,
 **Session menu.** The ⋮ button in the header holds the rest:
 
 - *View only* stops sending your keyboard and pointer, to watch without
-  touching anything.
+  touching anything. The window then leaves the keyboard alone, so your
+  own shortcuts keep working with the pointer over the picture.
 - *Send keys* sends a shortcut your own desktop would keep for itself:
   Super, Alt+Tab, Shift+Esc, Ctrl+Alt+Delete or Print Screen.
 - *Lock remote screen* locks the shown machine now, and *Lock when

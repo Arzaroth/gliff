@@ -1721,22 +1721,7 @@ fn setup_output(
             mons.iter().find(|m| &m.name == name)
         }
         .with_context(|| format!("no output {name}"))?;
-        return Ok(SessionOutput {
-            name: m.name.clone(),
-            width: if m.transform & 1 != 0 {
-                m.height
-            } else {
-                m.width
-            } & !1,
-            height: if m.transform & 1 != 0 {
-                m.width
-            } else {
-                m.height
-            } & !1,
-            scale: m.scale,
-            headless: None,
-            awake: None,
-        });
+        return Ok(mirrored_output(m));
     }
     let requested = format!("gliff-{}", std::process::id());
     let (wait, timed_out) = match instance.create_headless_output(&requested) {
@@ -1795,6 +1780,19 @@ fn setup_output(
     // An output added while the remote sleeps comes up switched off.
     output.awake = Some(KeepAwake::start(instance.clone(), output.name.clone())?);
     Ok(output)
+}
+
+/// An existing monitor, mirrored at its rotated physical size.
+fn mirrored_output(m: &hypr_ipc::Monitor) -> SessionOutput {
+    let rotated = m.transform & 1 != 0;
+    SessionOutput {
+        name: m.name.clone(),
+        width: if rotated { m.height } else { m.width } & !1,
+        height: if rotated { m.width } else { m.height } & !1,
+        scale: m.scale,
+        headless: None,
+        awake: None,
+    }
 }
 
 /// A timed-out request may still finish in the compositor. An explicit

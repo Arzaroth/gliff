@@ -754,6 +754,7 @@ impl Session {
             ClientMsg::ListOutputs | ClientMsg::SelectOutput { .. } => {}
             // Handled by the session loop, which owns the lock on disconnect.
             ClientMsg::LockScreen | ClientMsg::LockOnDisconnect { .. } => {}
+            ClientMsg::Privacy { .. } => {}
             ClientMsg::Quality { mode, max_fps } => {
                 if self
                     .caps

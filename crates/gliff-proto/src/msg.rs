@@ -63,6 +63,10 @@ pub const FEATURE_LOCK: &str = "lock";
 /// Steering the stream's quality: `ClientMsg::Quality`.
 pub const FEATURE_QUALITY: &str = "quality";
 
+/// Privacy mode on a private screen: `ClientMsg::Privacy`, answered with
+/// `ServerMsg::Privacy`.
+pub const FEATURE_PRIVACY: &str = "privacy";
+
 pub fn features() -> Vec<String> {
     FEATURES.iter().map(|f| f.to_string()).collect()
 }
@@ -423,6 +427,14 @@ pub enum ClientMsg {
         #[n(1)]
         max_fps: u32,
     },
+    /// Cover the remote's other screens while this session shows a private
+    /// one, or uncover them. Sent only to a server that listed
+    /// [`FEATURE_PRIVACY`].
+    #[n(26)]
+    Privacy {
+        #[n(0)]
+        enabled: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
@@ -618,6 +630,14 @@ pub enum ServerMsg {
         current: String,
         #[n(2)]
         selectable: bool,
+    },
+    /// Whether privacy mode is on, after each `ClientMsg::Privacy`: it
+    /// stays off when the session has no private screen or the compositor
+    /// cannot cover the others.
+    #[n(16)]
+    Privacy {
+        #[n(0)]
+        enabled: bool,
     },
 }
 

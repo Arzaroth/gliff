@@ -66,7 +66,8 @@ impl Queue {
             ServerMsg::CursorPos { .. }
             | ServerMsg::Pong { .. }
             | ServerMsg::Ping { .. }
-            | ServerMsg::Outputs { .. } => {
+            | ServerMsg::Outputs { .. }
+            | ServerMsg::Privacy { .. } => {
                 self.packets.retain(|(queued, _)| {
                     std::mem::discriminant(queued) != std::mem::discriminant(&msg)
                 });

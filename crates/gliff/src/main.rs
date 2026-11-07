@@ -147,6 +147,11 @@ struct App {
     /// With all screens shown, the session under the pointer, which gets
     /// keyboard and pointer input.
     target: RefCell<Option<Rc<Session>>>,
+    /// The session menu: view only, keys to send, locking.
+    session_btn: gtk::MenuButton,
+    session_list: gtk::Box,
+    /// Input is not sent: the remote is only watched.
+    view_only: Cell<bool>,
     /// Evdev codes currently held on the remote, so they can all be released
     /// when the keyboard is handed back to the local compositor.
     pressed_keys: RefCell<BTreeSet<u32>>,
@@ -386,6 +391,15 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
         .popover(&gtk::Popover::builder().child(&screen_list).build())
         .visible(false)
         .build();
+    let session_list = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(2)
+        .build();
+    let session_btn = gtk::MenuButton::builder()
+        .icon_name("view-more-symbolic")
+        .tooltip_text("Session")
+        .popover(&gtk::Popover::builder().child(&session_list).build())
+        .build();
     let tabs = gtk::Box::builder().spacing(6).build();
     let tabs_scroller = gtk::ScrolledWindow::builder()
         .child(&tabs)
@@ -401,6 +415,7 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
     header.pack_end(&sound_btn);
     header.pack_end(&mic_btn);
     header.pack_end(&screen_btn);
+    header.pack_end(&session_btn);
 
     let stats = gtk::Label::builder()
         .halign(gtk::Align::Start)
@@ -488,6 +503,9 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
         screen_btn: screen_btn.clone(),
         screen_list,
         target: RefCell::new(None),
+        session_btn: session_btn.clone(),
+        session_list,
+        view_only: Cell::new(false),
         pressed_keys: RefCell::new(BTreeSet::new()),
         released: Cell::new(false),
         config_path: Config::default_path(),
@@ -504,6 +522,7 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
     install_sound_button(&ui);
     install_mic_button(&ui);
     install_screen_menu(&ui);
+    install_session_menu(&ui);
     install_address_bar(&ui, &connect_btn);
     refresh_tabs(&ui);
 
@@ -1702,6 +1721,9 @@ fn to_remote(ui: &App, x: f64, y: f64) -> (f64, f64) {
 }
 
 fn send(ui: &App, msg: ClientMsg) {
+    if ui.view_only.get() {
+        return;
+    }
     if let Some(s) = target(ui) {
         send_to(&s, msg);
     }
@@ -2526,6 +2548,77 @@ fn set_sound_icon(btn: &gtk::ToggleButton, on: bool) {
     } else {
         "Play the remote's sound"
     }));
+}
+
+/// Keys the local compositor would keep for itself, sent from the session
+/// menu as evdev codes, held in order and released in reverse.
+const KEY_COMBOS: &[(&str, &[u32])] = &[
+    ("Super", &[125]),
+    ("Alt+Tab", &[56, 15]),
+    ("Shift+Esc", &[42, 1]),
+    ("Ctrl+Alt+Delete", &[29, 56, 111]),
+    ("Print Screen", &[99]),
+];
+
+fn combo_events(codes: &[u32]) -> Vec<(u32, bool)> {
+    codes
+        .iter()
+        .map(|&code| (code, true))
+        .chain(codes.iter().rev().map(|&code| (code, false)))
+        .collect()
+}
+
+/// The session menu: watch without sending input, and send keys the local
+/// compositor would otherwise catch. Sent keys go out even when only
+/// watching, since they are asked for explicitly.
+fn install_session_menu(ui: &Rc<App>) {
+    let view_only = gtk::CheckButton::with_label("View only");
+    let weak = Rc::downgrade(ui);
+    view_only.connect_toggled(move |check| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        if check.is_active() {
+            release_pressed_keys(&ui);
+        }
+        ui.view_only.set(check.is_active());
+        show_hint(
+            &ui,
+            if check.is_active() {
+                "View only: input is not sent"
+            } else {
+                "Input is sent again"
+            },
+        );
+    });
+    ui.session_list.append(&view_only);
+    let heading = gtk::Label::builder()
+        .label("Send keys")
+        .halign(gtk::Align::Start)
+        .css_classes(["dim-label"])
+        .margin_top(6)
+        .build();
+    ui.session_list.append(&heading);
+    for (label, codes) in KEY_COMBOS {
+        let button = gtk::Button::builder()
+            .label(*label)
+            .has_frame(false)
+            .halign(gtk::Align::Fill)
+            .build();
+        let weak = Rc::downgrade(ui);
+        button.connect_clicked(move |_| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            ui.session_btn.popdown();
+            if let Some(s) = target(&ui) {
+                for (keycode, pressed) in combo_events(codes) {
+                    send_to(&s, ClientMsg::Key { keycode, pressed });
+                }
+            }
+        });
+        ui.session_list.append(&button);
+    }
 }
 
 /// The screen menu asks the shown machine for its screens each time it

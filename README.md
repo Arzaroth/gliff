@@ -97,7 +97,9 @@ no machines yet, it opens with the address bar ready.
 remote machine and shows only it, in a window of its own that takes the
 app's title: the app gets a private screen the size of the window and
 opens fullscreen and opaque on it, so menus and dialogs show inside it as
-usual. Resizing the window resizes the app. Closing the window closes the
+usual. You hear the app's own sound only, which needs PipeWire on the
+remote machine; it still plays there too. Resizing the window resizes the
+app. Closing the window closes the
 app as its close button would, and when the app closes, so does the
 window. Nothing is copied to your machine; the app runs remotely. The ⋮
 session menu's *Open a remote app* field does the same for the shown

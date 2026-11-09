@@ -268,8 +268,12 @@ Every crate with `unsafe` documents the safety requirements at each block.
   `fullscreen` and an `opaque` rule, so the app's first window covers the
   screen and the bar the remote's shell starts on every output, even with
   a translucent background, and its popups render inside it. Every 500 ms
-  it lists the windows on that workspace: a title change goes to the
-  client as `AppTitle`, and once a window has existed and none is left
+  it lists the windows on that workspace. Their processes become the
+  session's sound filter: the audio linker links only streams whose
+  `application.process.id` (on the node or its client) is one of them or
+  descends from one, read through `/proc/<pid>/stat`; with no audio graph
+  to filter, an app session sends no sound rather than the whole output.
+  A title change goes to the client as `AppTitle`, and once a window has existed and none is left
   (or none opened within 30 s) it sends `AppClosed`, stops encoding, lets
   the writer flush for at most a second and ends. Ending the session any
   other way first closes the app's windows through `close_window`. Every

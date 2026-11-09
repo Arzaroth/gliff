@@ -328,6 +328,17 @@ Every crate with `unsafe` documents the safety requirements at each block.
   from a keyframe. The client keeps the preset per machine and sends it
   on each connection.
 
+- **Privacy mode.** A server that listed the `privacy` feature answers
+  `ClientMsg::Privacy` with `ServerMsg::Privacy` carrying the outcome. On a
+  headless session it opens a Wayland connection of its own and gives
+  every other output a `zwlr_layer_surface_v1` on the overlay layer,
+  anchored to all edges, exclusive zone -1, no keyboard interactivity,
+  showing one zero-filled XRGB buffer. The surfaces need no event loop
+  after their first configure, and the compositor removes them when the
+  connection closes, so a dying server cannot leave screens covered. A
+  mirrored session refuses: covering the screen it shows would only send
+  black.
+
 - **Screen lock.** A server that listed the `lock` feature reads the user's
   graphical session from logind (`loginctl show-user <uid> -p Display`)
   and runs `loginctl lock-session` on it, for `ClientMsg::LockScreen` and,

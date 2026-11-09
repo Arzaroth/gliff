@@ -127,6 +127,11 @@ without moving the pointer. `--release-hotkey` changes that key (`ctrl+alt+q`,
   frame-rate cap. Each machine keeps its own choice.
 - *Send keys* sends a shortcut your own desktop would keep for itself:
   Super, Alt+Tab, Shift+Esc, Ctrl+Alt+Delete or Print Screen.
+- *Privacy mode*, on a private screen (`--headless`), covers every other
+  screen of the remote machine in black, so someone at it sees nothing of
+  what you do; clicks there land on the cover. Their keyboard still types
+  into the focused window. The covers go when you turn it off, disconnect,
+  or the server stops.
 - *Lock remote screen* locks the shown machine now, and *Lock when
   disconnecting* locks every machine whose connection ends, however it
   ends, and is remembered. The lock goes through logind, so the remote's

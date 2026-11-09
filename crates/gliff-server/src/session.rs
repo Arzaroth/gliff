@@ -270,11 +270,31 @@ where
         .iter()
         .any(|feature| feature == gliff_proto::FEATURE_AUDIO);
     let mut sound = crate::audio::Sound::default();
+    let mic_supported = session
+        .caps
+        .features
+        .iter()
+        .any(|feature| feature == gliff_proto::FEATURE_MIC);
+    let mut mic = crate::mic::Mic::default();
     loop {
         let flow = tokio::select! {
             msg = msg_rx.recv() => match msg {
                 Some(Inbound::Msg(ClientMsg::Audio { enabled })) => {
                     sound.set(enabled && audio_supported, &session.writer);
+                    ControlFlow::Continue(())
+                }
+                Some(Inbound::Msg(ClientMsg::MicStart { codec, sample_rate, channels })) => {
+                    if mic_supported {
+                        mic.start(codec, sample_rate, channels);
+                    }
+                    ControlFlow::Continue(())
+                }
+                Some(Inbound::Msg(ClientMsg::MicStop)) => {
+                    mic.stop();
+                    ControlFlow::Continue(())
+                }
+                Some(Inbound::Mic(seq, packet)) => {
+                    mic.frame(seq, &packet);
                     ControlFlow::Continue(())
                 }
                 Some(Inbound::Msg(msg)) => session.on_client_msg(msg).await?,
@@ -399,6 +419,8 @@ enum Inbound {
     Msg(ClientMsg),
     /// A clipboard message with the chunk that followed it (empty otherwise).
     Clipboard(ClipboardMsg, Bytes),
+    /// A microphone packet and its sequence number.
+    Mic(u32, Bytes),
 }
 
 /// Drain the socket on its own task so a burst of input (a mouse drag) can
@@ -420,6 +442,16 @@ where
                 }
             };
             let inbound = match msg.into_clipboard() {
+                Err(ClientMsg::MicFrame { seq, data_len }) => {
+                    if data_len > crate::mic::MAX_PACKET {
+                        tracing::warn!(data_len, "microphone packet over the limit");
+                        break;
+                    }
+                    match reader.read_payload(data_len).await {
+                        Ok(b) => Inbound::Mic(seq, b),
+                        Err(_) => break,
+                    }
+                }
                 Err(msg) => Inbound::Msg(msg),
                 Ok(clip) => {
                     let payload = match &clip {
@@ -639,6 +671,8 @@ impl Session {
             ClientMsg::Keymap { .. } => {}
             // Handled by the session loop, which owns the sound.
             ClientMsg::Audio { .. } => {}
+            // Handled by the session loop, which owns the microphone.
+            ClientMsg::MicStart { .. } | ClientMsg::MicFrame { .. } | ClientMsg::MicStop => {}
             ClientMsg::Hello { .. } => anyhow::bail!("unexpected second Hello"),
         }
         Ok(ControlFlow::Continue(()))

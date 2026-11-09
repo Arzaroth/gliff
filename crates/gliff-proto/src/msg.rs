@@ -34,7 +34,11 @@ pub const PROTOCOL_VERSION: u16 = 1;
 
 /// Optional behaviours this build supports, exchanged in the handshake. A
 /// behaviour is used only when both ends list it.
-pub const FEATURES: &[&str] = &[];
+pub const FEATURES: &[&str] = &[FEATURE_OUTPUTS];
+
+/// Choosing the mirrored screen during a session: `ClientMsg::ListOutputs`
+/// and `SelectOutput`, answered with `ServerMsg::Outputs`.
+pub const FEATURE_OUTPUTS: &str = "outputs";
 
 pub fn features() -> Vec<String> {
     FEATURES.iter().map(|f| f.to_string()).collect()
@@ -299,6 +303,17 @@ pub enum ClientMsg {
         #[n(0)]
         t: u64,
     },
+    /// Ask for the remote's screens; the server answers with `Outputs`.
+    /// Sent only to a server that listed [`FEATURE_OUTPUTS`].
+    #[n(21)]
+    ListOutputs,
+    /// Mirror the named screen instead of the current one. The server
+    /// answers with `Outputs`, whose `current` says whether it switched.
+    #[n(22)]
+    SelectOutput {
+        #[n(0)]
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
@@ -461,6 +476,18 @@ pub enum ServerMsg {
     Ping {
         #[n(0)]
         t: u64,
+    },
+    /// The remote's screens and the one this session shows. Sent only to a
+    /// client that listed [`FEATURE_OUTPUTS`]; `selectable` is false when
+    /// the session cannot switch, such as on a private headless screen.
+    #[n(15)]
+    Outputs {
+        #[n(0)]
+        outputs: Vec<OutputInfo>,
+        #[n(1)]
+        current: String,
+        #[n(2)]
+        selectable: bool,
     },
 }
 
@@ -720,6 +747,13 @@ mod tests {
                 "820682182a1903e8",
             ),
             (ClientMsg::RequestKeyframe, "820780"),
+            (ClientMsg::ListOutputs, "821580"),
+            (
+                ClientMsg::SelectOutput {
+                    name: "DP-1".into(),
+                },
+                "8216816444502d31",
+            ),
         ];
         for (msg, bytes) in client {
             assert_eq!(hex(&minicbor::to_vec(&msg).unwrap()), bytes, "{msg:?}");
@@ -775,6 +809,19 @@ mod tests {
                 "8202860102f5818400000a0a18641832",
             ),
             (ServerMsg::error(ERROR_VERSION, "m"), "82098301616d01"),
+            (
+                ServerMsg::Outputs {
+                    outputs: vec![OutputInfo {
+                        name: "DP-1".into(),
+                        width: 2560,
+                        height: 1440,
+                        scale_milli: 1000,
+                    }],
+                    current: "DP-1".into(),
+                    selectable: true,
+                },
+                "820f8381846444502d31190a001905a01903e86444502d31f5",
+            ),
         ];
         for (msg, bytes) in server {
             assert_eq!(hex(&minicbor::to_vec(&msg).unwrap()), bytes, "{msg:?}");

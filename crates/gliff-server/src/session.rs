@@ -262,11 +262,45 @@ where
         base_chroma: chroma,
         sent_fps_cap: start_fps,
         cursor_shape_id: 0,
+        target: cfg.target.clone(),
+        render_node: cfg.render_node.clone(),
+        capture_mode: cfg.capture,
+        keymap,
     };
 
+    let outputs_supported = session
+        .caps
+        .features
+        .iter()
+        .any(|feature| feature == gliff_proto::FEATURE_OUTPUTS);
+    if outputs_supported {
+        session.send_outputs();
+    }
+    // A screen switched to may be static and send no first frame; this
+    // rescues it the way `first_frame_deadline` rescues the first screen.
+    let mut switch_rescue: Option<(tokio::time::Instant, u64)> = None;
     loop {
         let flow = tokio::select! {
             msg = msg_rx.recv() => match msg {
+                Some(Inbound::Msg(ClientMsg::ListOutputs)) => {
+                    if outputs_supported {
+                        session.send_outputs();
+                    }
+                    ControlFlow::Continue(())
+                }
+                Some(Inbound::Msg(ClientMsg::SelectOutput { name })) => {
+                    if outputs_supported {
+                        if let Some(rx) = session.select_output(&name)? {
+                            cap_rx = rx;
+                            switch_rescue = Some((
+                                tokio::time::Instant::now() + FIRST_FRAME_DEADLINE,
+                                session.frame_id,
+                            ));
+                        }
+                        session.send_outputs();
+                    }
+                    ControlFlow::Continue(())
+                }
                 Some(Inbound::Msg(msg)) => session.on_client_msg(msg).await?,
                 Some(Inbound::Clipboard(msg, payload)) => {
                     clipboard.on_peer_msg(msg, payload);
@@ -311,6 +345,17 @@ where
                 tracing::info!("no first frame yet; recapturing with full damage");
                 session.recaptured = true;
                 session.capturer().recapture().ok();
+                ControlFlow::Continue(())
+            }
+            _ = tokio::time::sleep_until(switch_rescue.map_or(first_frame_deadline, |(at, _)| at)),
+                if switch_rescue.is_some() =>
+            {
+                if let Some((_, frame_id)) = switch_rescue.take() {
+                    if session.frame_id == frame_id {
+                        tracing::info!("no frame from the new output yet; recapturing with full damage");
+                        session.capturer().recapture().ok();
+                    }
+                }
                 ControlFlow::Continue(())
             }
             // The refinement timer: fires when the screen is still and the
@@ -492,6 +537,12 @@ struct Session {
     /// still reaches the client.
     sent_fps_cap: u32,
     cursor_shape_id: u32,
+    /// What starting the capture and input threads again on another output
+    /// needs.
+    target: Target,
+    render_node: PathBuf,
+    capture_mode: CaptureMode,
+    keymap: String,
 }
 
 /// The session-wide fps ceiling; ladder levels cap below it.
@@ -620,9 +671,12 @@ impl Session {
             | ClientMsg::ClipboardAbort { .. } => {}
             ClientMsg::Keymap { keymap } if !keymap.is_empty() => {
                 tracing::debug!(bytes = keymap.len(), "client keymap changed");
+                self.keymap = keymap.clone();
                 self.inject(InputCmd::SetKeymap(keymap))
             }
             ClientMsg::Keymap { .. } => {}
+            // Handled by the session loop, which owns the capture channel.
+            ClientMsg::ListOutputs | ClientMsg::SelectOutput { .. } => {}
             ClientMsg::Hello { .. } => anyhow::bail!("unexpected second Hello"),
         }
         Ok(ControlFlow::Continue(()))
@@ -710,6 +764,102 @@ impl Session {
         self.inject(self.output.logical_extent());
         self.send_config();
         Ok(())
+    }
+
+    /// Mirror the monitor `name` instead of the current output, with capture
+    /// and input threads of its own. Returns the new capture channel, so no
+    /// frame or stop from the old capture can reach the session; `None` when
+    /// nothing changed.
+    fn select_output(&mut self, name: &str) -> Result<Option<UnboundedReceiver<Incoming>>> {
+        if self.output.is_headless() || name == self.output.name {
+            return Ok(None);
+        }
+        let mons = self.instance.monitors()?;
+        let Some(monitor) = mons.iter().find(|m| m.name == name && !m.disabled) else {
+            tracing::warn!(output = name, "no such output to switch to");
+            return Ok(None);
+        };
+        let next = mirrored_output(monitor);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let allow_shm = !matches!(self.video, VideoTier::Gpu(_));
+        let started = start_capture(
+            &self.target,
+            &next.name,
+            &self.render_node,
+            self.capture_mode,
+            allow_shm,
+            false,
+            tx,
+        )
+        .and_then(|capturer| {
+            if self.require_shm {
+                capturer.use_shm()?;
+            }
+            Ok((
+                capturer,
+                start_input(&self.target, &next.name, &self.keymap)?,
+            ))
+        });
+        let (capturer, input) = match started {
+            Ok(threads) => threads,
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), output = name, "cannot switch output");
+                return Ok(None);
+            }
+        };
+        tracing::info!(output = name, next.width, next.height, "switching output");
+        self.inject(InputCmd::ReleaseAll);
+        drop(self.output.capturer.replace(capturer));
+        drop(self.output.input.replace(input));
+        self.output.output = next;
+        self.inject(self.output.logical_extent());
+        self.pending = None;
+        self.last_frame = None;
+        self.refines = MAX_REFINES;
+        let previous_stream = self.stream;
+        self.fit_mirror(self.client_extent.0, self.client_extent.1)?;
+        if self.stream == previous_stream {
+            self.send_config();
+        }
+        self.want_keyframe = true;
+        self.capturer().request_frame().ok();
+        self.capture_asked = true;
+        Ok(Some(rx))
+    }
+
+    /// Tell the client the remote's screens and the one shown. A headless
+    /// session lists only its own screen and cannot switch.
+    fn send_outputs(&mut self) {
+        let selectable = !self.output.is_headless();
+        let info = |o: &SessionOutput| ProtoOutput {
+            name: o.name.clone(),
+            width: o.width,
+            height: o.height,
+            scale_milli: (o.scale * 1000.0).round() as u32,
+        };
+        let outputs = if selectable {
+            match self.instance.monitors() {
+                Ok(mons) => mons
+                    .iter()
+                    .filter(|m| !m.disabled)
+                    .map(|m| info(&mirrored_output(m)))
+                    .collect(),
+                Err(e) => {
+                    tracing::warn!(error = %e, "cannot list outputs");
+                    vec![info(&self.output)]
+                }
+            }
+        } else {
+            vec![info(&self.output)]
+        };
+        self.writer.send(
+            ServerMsg::Outputs {
+                outputs,
+                current: self.output.name.clone(),
+                selectable,
+            },
+            Vec::new(),
+        );
     }
 
     /// A mirrored screen keeps its size; when it is larger than the client's
@@ -1671,22 +1821,7 @@ fn setup_output(
             mons.iter().find(|m| &m.name == name)
         }
         .with_context(|| format!("no output {name}"))?;
-        return Ok(SessionOutput {
-            name: m.name.clone(),
-            width: if m.transform & 1 != 0 {
-                m.height
-            } else {
-                m.width
-            } & !1,
-            height: if m.transform & 1 != 0 {
-                m.width
-            } else {
-                m.height
-            } & !1,
-            scale: m.scale,
-            headless: None,
-            awake: None,
-        });
+        return Ok(mirrored_output(m));
     }
     let requested = format!("gliff-{}", std::process::id());
     let (wait, timed_out) = match instance.create_headless_output(&requested) {
@@ -1745,6 +1880,19 @@ fn setup_output(
     // An output added while the remote sleeps comes up switched off.
     output.awake = Some(KeepAwake::start(instance.clone(), output.name.clone())?);
     Ok(output)
+}
+
+/// An existing monitor, mirrored at its rotated physical size.
+fn mirrored_output(m: &hypr_ipc::Monitor) -> SessionOutput {
+    let rotated = m.transform & 1 != 0;
+    SessionOutput {
+        name: m.name.clone(),
+        width: if rotated { m.height } else { m.width } & !1,
+        height: if rotated { m.width } else { m.height } & !1,
+        scale: m.scale,
+        headless: None,
+        awake: None,
+    }
 }
 
 /// A timed-out request may still finish in the compositor. An explicit
@@ -1922,6 +2070,26 @@ mod tests {
         runtime.block_on(async { tokio::time::sleep(Duration::from_millis(10)).await });
         release.send(()).unwrap();
         drop(poll);
+    }
+
+    #[test]
+    fn a_rotated_monitor_is_mirrored_at_its_rotated_size() {
+        let monitor = |transform: i32| -> hypr_ipc::Monitor {
+            serde_json::from_value(serde_json::json!({
+                "id": 1, "name": "DP-2", "width": 2561, "height": 1440,
+                "scale": 1.25, "transform": transform,
+            }))
+            .unwrap()
+        };
+        let upright = mirrored_output(&monitor(0));
+        assert_eq!((upright.width, upright.height), (2560, 1440));
+        let rotated = mirrored_output(&monitor(1));
+        assert_eq!(
+            (rotated.name.as_str(), rotated.width, rotated.height),
+            ("DP-2", 1440, 2560)
+        );
+        assert_eq!(rotated.scale, 1.25);
+        assert!(!rotated.is_headless());
     }
 
     #[test]

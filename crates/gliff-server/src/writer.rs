@@ -53,7 +53,7 @@ impl Queue {
                     ServerMsg::CursorShape { .. } | ServerMsg::CursorPos { .. }
                 )
             }),
-            ServerMsg::CursorPos { .. } | ServerMsg::Pong { .. } => {
+            ServerMsg::CursorPos { .. } | ServerMsg::Pong { .. } | ServerMsg::Outputs { .. } => {
                 self.packets.retain(|(queued, _)| {
                     std::mem::discriminant(queued) != std::mem::discriminant(&msg)
                 });
@@ -232,6 +232,25 @@ mod tests {
             ServerMsg::StreamConfig { width: 1799, .. }
         ));
         assert!(!queue.video_ready());
+    }
+
+    #[test]
+    fn only_the_newest_output_list_waits() {
+        let mut queue = Queue::default();
+        for current in ["DP-1", "DP-2", "HDMI-A-1"] {
+            queue.push(
+                ServerMsg::Outputs {
+                    outputs: Vec::new(),
+                    current: current.into(),
+                    selectable: true,
+                },
+                Vec::new(),
+            );
+        }
+        assert_eq!(queue.packets.len(), 1);
+        assert!(
+            matches!(&queue.packets[0].0, ServerMsg::Outputs { current, .. } if current == "HDMI-A-1")
+        );
     }
 
     #[test]

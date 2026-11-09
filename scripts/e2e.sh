@@ -17,6 +17,9 @@
 #  10. a keymap sent mid-session is the one the compositor serves its clients
 #  11. a keymap change mid-session reaches clients behind an input method
 #      (fcitx5), when fcitx5 and foot are installed
+#  12. focus changes do not stack shortcut-inhibit handlers
+#  14. privacy mode covers the other screens, a new one included, and turns
+#      their keyboard off, until the client leaves or the server dies
 #
 # Exits non-zero on the first failure.
 set -uo pipefail
@@ -61,6 +64,7 @@ sleep 6
 # The nested instance is the directory that was not there before we started it.
 NEST_SIG=$(comm -13 <(echo "$before" | sort) <(ls "$XDG_RUNTIME_DIR/hypr" | sort) | head -1)
 [ -n "$NEST_SIG" ] || fail "nested Hyprland did not start"
+OUTER_SIG=${HYPRLAND_INSTANCE_SIGNATURE:-}
 export HYPRLAND_INSTANCE_SIGNATURE="$NEST_SIG"
 export WAYLAND_DISPLAY=$(sed -n 2p "$XDG_RUNTIME_DIR/hypr/$NEST_SIG/hyprland.lock")
 echo "   nested sig $NEST_SIG on $WAYLAND_DISPLAY"
@@ -372,5 +376,65 @@ inhibits=$(grep -c "compositor shortcut inhibit" "$ilog")
     || fail "$inhibits shortcut-inhibit notifications for $focused focus changes"
 rm -rf "$ixdg" "$txdg" "$ilog"
 echo "   shortcut inhibit PASS"
+
+echo "== 14. privacy mode =="
+if command -v foot >/dev/null && command -v grim >/dev/null && [ -n "$OUTER_SIG" ]; then
+    # Mean brightness of an output of the nested compositor, 0 to 255.
+    brightness() {
+        grim -t ppm -o "$1" - 2>/dev/null | python3 -c '
+import sys
+data = sys.stdin.buffer.read()
+fields, pos = [], 0
+while len(fields) < 4:
+    while data[pos:pos + 1].isspace(): pos += 1
+    end = pos
+    while not data[end:end + 1].isspace(): end += 1
+    fields.append(data[pos:end]); pos = end
+pixels = data[pos + 1:]
+print(sum(pixels) // max(len(pixels), 1))'
+    }
+    # Keys typed on the nested compositor's own keyboard: the outer one sends
+    # them to the nested window, which is what a physical keyboard does.
+    nest_pid=$(sed -n 1p "$XDG_RUNTIME_DIR/hypr/$NEST_SIG/hyprland.lock")
+    type_key() {
+        HYPRLAND_INSTANCE_SIGNATURE=$OUTER_SIG hyprctl dispatch "hl.dsp.send_shortcut({ mods = \"\", key = \"$1\", window = \"pid:$nest_pid\" })" >/dev/null 2>&1 \
+            || HYPRLAND_INSTANCE_SIGNATURE=$OUTER_SIG hyprctl dispatch sendshortcut ", $1, pid:$nest_pid" >/dev/null 2>&1
+        sleep 0.3
+    }
+    typed_line() { type_key "$1"; type_key Return; sleep 0.5; tr '\n' ' ' <"$privtyped"; }
+    privtyped=$(mktemp)
+    screen=$(hyprctl monitors -j | python3 -c "import sys,json; print(next(m['name'] for m in json.load(sys.stdin) if not m['name'].startswith('gliff')))")
+    hyprctl dispatch "hl.dsp.exec_cmd(\"foot -T e2e-private sh -c 'cat > $privtyped'\")" >/dev/null; sleep 2
+    [ "$(typed_line a)" = "a " ] || fail "privacy: the test terminal does not take keys ($(cat "$privtyped"))"
+    run_private() {
+        "$SERVER" --listen 127.0.0.1:9052 --headless --instance "$NEST_SIG" >/tmp/gliff-e2e-privacy-server.log 2>&1 &
+        psp=$!; PIDS+=("$psp"); sleep 2
+        damage & pdp=$!; PIDS+=("$pdp")
+        privlog=$(mktemp)
+        GLIFF_PRIVACY=1 timeout 60 $PROBE --video "$CLIENT_VIDEO" serve-test --connect 127.0.0.1:9052 --frames 100000 >"$privlog" 2>&1 &
+        pcp=$!; PIDS+=("$pcp")
+        wait_recv "PRIVACY: on" "$privlog" || fail "privacy mode did not turn on ($(tail -3 "$privlog" | tr '\n' ' '))"
+        sleep 1
+    }
+    run_private
+    [ "$(brightness "$screen")" = 0 ] || fail "privacy: $screen is not covered"
+    hyprctl output create headless e2eprivate >/dev/null 2>&1; sleep 2
+    plugged=$(hyprctl monitors -j | python3 -c "import sys,json; print(next(m['name'] for m in json.load(sys.stdin) if 'e2eprivate' in m['name']))")
+    [ "$(brightness "$plugged")" = 0 ] || fail "privacy: a screen plugged in meanwhile is not covered"
+    hyprctl output remove "$plugged" >/dev/null 2>&1
+    [ "$(typed_line b)" = "a " ] || fail "privacy: the remote's own keyboard still types ($(cat "$privtyped"))"
+    kill "$pcp" "$pdp"; sleep 2; kill "$psp" 2>/dev/null; sleep 1
+    [ "$(brightness "$screen")" -gt 0 ] || fail "privacy: $screen stays covered after the client left"
+    [ "$(typed_line c)" = "a c " ] || fail "privacy: the keyboard did not come back after the client left ($(cat "$privtyped"))"
+    run_private
+    kill -9 "$psp"; sleep 2; kill "$pcp" "$pdp" 2>/dev/null
+    [ "$(typed_line d)" = "a c d " ] || fail "privacy: the keyboard did not come back after the server died ($(cat "$privtyped"))"
+    [ "$(brightness "$screen")" -gt 0 ] || fail "privacy: $screen stays covered after the server died"
+    hyprctl dispatch "hl.dsp.window.close({ window = \"title:e2e-private\" })" >/dev/null 2>&1
+    rm -f "$privtyped" "$privlog"
+    echo "   privacy mode PASS"
+else
+    echo "   skipped (needs foot, grim and an outer Hyprland)"
+fi
 
 echo "E2E PASS: all checks passed"

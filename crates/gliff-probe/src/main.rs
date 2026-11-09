@@ -649,6 +649,8 @@ fn serve_test(node: &std::path::Path, addr: &str, frames: usize, video: VideoMod
         } else {
             Vec::new()
         };
+        // GLIFF_PRIVACY turns privacy mode on; each answer prints PRIVACY.
+        let send_privacy = std::env::var_os("GLIFF_PRIVACY").is_some();
         let recv_file = std::env::var("GLIFF_RECV_CLIP_FILE").ok();
         let recv_dir = std::env::var("GLIFF_RECV_CLIP_DIR").ok().map(PathBuf::from);
         let mut clip_recv: Vec<u8> = Vec::new();
@@ -715,6 +717,7 @@ fn serve_test(node: &std::path::Path, addr: &str, frames: usize, video: VideoMod
                             writer.write_msg(&ClientMsg::Key { keycode, pressed: false }).await?;
                         }
                     }
+                    if got == 2 && send_privacy { writer.write_msg(&ClientMsg::Privacy { enabled: true }).await?; }
                     if got == 3 { writer.write_msg(&ClientMsg::Resize { width: 800, height: 600, scale: 2.0 }).await?; }
                     if got == 4 && (send_clip.is_some() || send_file.is_some() || !send_files.entries.is_empty()) {
                         let mut mime_types: Vec<String> = Vec::new();
@@ -734,6 +737,7 @@ fn serve_test(node: &std::path::Path, addr: &str, frames: usize, video: VideoMod
                     scaled = if session.headless { scale_milli == 2000 } else { w <= 800 && h <= 600 && scale_milli < 1000 };
                 }
                 ServerMsg::CursorShape { argb_len, .. } => { let _ = reader.read_payload(argb_len).await?; }
+                ServerMsg::Privacy { enabled } => eprintln!("PRIVACY: {}", if enabled { "on" } else { "off" }),
                 // The server offers its selection; ask for one item and keep it once complete.
                 ServerMsg::ClipboardOffer { serial, mime_types, files } => {
                     recv_serial = serial;

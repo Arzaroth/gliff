@@ -745,6 +745,9 @@ fn serve_test(node: &std::path::Path, addr: &str, frames: usize, video: VideoMod
                 ServerMsg::Outputs { outputs, current, selectable } => {
                     let names: Vec<&str> = outputs.iter().map(|o| o.name.as_str()).collect();
                     eprintln!("OUTPUTS: current={current} selectable={selectable} screens={}", names.join(","));
+                    for o in &outputs {
+                        if let (Some(x), Some(y)) = (o.x, o.y) { eprintln!("OUTPUT-AT: {} {x} {y}", o.name); }
+                    }
                 }
                 // The server offers its selection; ask for one item and keep it once complete.
                 ServerMsg::ClipboardOffer { serial, mime_types, files } => {

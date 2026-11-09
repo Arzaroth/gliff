@@ -20,6 +20,8 @@
 #  12. focus changes do not stack shortcut-inhibit handlers
 #  15. a mirrored session lists the screens and switches to another one;
 #      a private screen refuses to switch
+#  16. two connections show two screens of one machine at once, each with
+#      its place in the layout
 #
 # Exits non-zero on the first failure.
 set -uo pipefail
@@ -403,5 +405,31 @@ grep -q "^OUTPUTS: current=$first" "$selectlog" && fail "a private screen switch
 hyprctl output remove "$second" >/dev/null 2>&1
 rm -f "$selectlog"
 echo "   screen selection PASS"
+
+echo "== 16. all screens at once =="
+first=$(hyprctl monitors -j | python3 -c "import sys,json; print(next(m['name'] for m in json.load(sys.stdin) if not m['name'].startswith('gliff')))")
+hyprctl output create headless e2eall >/dev/null 2>&1; sleep 1
+second=$(hyprctl monitors -j | python3 -c "import sys,json; print(next(m['name'] for m in json.load(sys.stdin) if 'e2eall' in m['name']))")
+hyprctl eval "hl.monitor({ output = \"$second\", mode = \"1024x768@60\", position = \"auto\", scale = 1 })" >/dev/null 2>&1; sleep 1
+alla=$(mktemp); allb=$(mktemp)
+"$SERVER" --listen 127.0.0.1:9054 --output "$first" --instance "$NEST_SIG" >/tmp/gliff-e2e-all-a.log 2>&1 &
+asp=$!; PIDS+=("$asp")
+"$SERVER" --listen 127.0.0.1:9055 --output "$first" --instance "$NEST_SIG" >/tmp/gliff-e2e-all-b.log 2>&1 &
+bsp=$!; PIDS+=("$bsp"); sleep 2
+damage & adp=$!; PIDS+=("$adp")
+timeout 30 $PROBE --video "$CLIENT_VIDEO" serve-test --connect 127.0.0.1:9054 --frames 20 >"$alla" 2>&1 &
+acp=$!; PIDS+=("$acp")
+GLIFF_SELECT_OUTPUT=$second timeout 30 $PROBE --video "$CLIENT_VIDEO" serve-test --connect 127.0.0.1:9055 --frames 20 >"$allb" 2>&1 \
+    || fail "all screens: the second screen's connection ($(tail -2 "$allb" | tr '\n' ' '))"
+wait "$acp" || fail "all screens: the first screen's connection ($(tail -2 "$alla" | tr '\n' ' '))"
+kill "$adp" "$asp" "$bsp" 2>/dev/null; sleep 1
+grep -q '^PASS decoded 20 frames' "$alla" && grep -q '^PASS decoded 20 frames' "$allb" || fail "all screens: a screen stopped streaming"
+grep -q "^OUTPUTS: current=$second selectable=true" "$allb" || fail "all screens: the second connection is not on $second"
+fx=$(awk -v n="$first" '$1=="OUTPUT-AT:" && $2==n {print $3; exit}' "$alla")
+sx=$(awk -v n="$second" '$1=="OUTPUT-AT:" && $2==n {print $3; exit}' "$alla")
+[ -n "$fx" ] && [ -n "$sx" ] && [ "$fx" != "$sx" ] || fail "all screens: the screens' places are missing ($(grep OUTPUT-AT "$alla" | tr '\n' ' '))"
+hyprctl output remove "$second" >/dev/null 2>&1
+rm -f "$alla" "$allb"
+echo "   all screens at once PASS"
 
 echo "E2E PASS: all checks passed"

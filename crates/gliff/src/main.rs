@@ -89,6 +89,11 @@ struct Cli {
     /// button turns it on and off; it is sent to the shown machine only.
     #[arg(long)]
     mic: bool,
+    /// Run COMMAND on the remote machine as an app in a window of its own:
+    /// it gets a private screen the size of this window, the window takes
+    /// its title, and closing either closes the other. With ssh only.
+    #[arg(long, value_name = "COMMAND", conflicts_with_all = ["output", "headless"])]
+    app: Option<String>,
     /// The input the microphone button records, as a PipeWire node name
     /// (`wpctl status` lists them), such as an echo-cancelled source.
     /// Defaults to the default input when the microphone turns on.
@@ -214,6 +219,8 @@ struct Session {
     member: Cell<bool>,
     /// The server can lock its screen.
     lockable: Cell<bool>,
+    /// The title of the app the session runs, in app mode.
+    app_title: RefCell<Option<String>>,
     /// The server follows quality presets.
     tunable: Cell<bool>,
     /// The server can cover its other screens, and has.
@@ -275,6 +282,7 @@ impl Session {
             members: RefCell::new(Vec::new()),
             member: Cell::new(false),
             lockable: Cell::new(false),
+            app_title: RefCell::new(None),
             tunable: Cell::new(false),
             coverable: Cell::new(false),
             privacy_on: Cell::new(false),
@@ -333,6 +341,10 @@ fn ssh_endpoint(cli: &Cli, host: &str) -> Endpoint {
     let mut t = SshTarget::new(host.to_string());
     t.server_bin = cli.server_bin.clone();
     t.server_args = match (&cli.output, cli.headless) {
+        _ if cli.app.is_some() => vec![
+            "--app".into(),
+            shell_quote(cli.app.as_deref().unwrap_or_default()),
+        ],
         (Some(name), _) => vec!["--output".into(), name.clone()],
         (None, true) => vec!["--headless".into()],
         (None, false) => vec!["--output".into(), "auto".into()],
@@ -350,6 +362,12 @@ fn machine_name(endpoint: &Endpoint) -> &str {
 
 /// Title in the `Document — App` form used by GNOME apps, so the machine
 /// is what a task switcher shows first.
+/// `text` quoted for a POSIX shell: ssh hands the remote shell its
+/// arguments joined into one command line.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
 fn window_title(endpoint: &Endpoint) -> String {
     format!("{} — Gliff", machine_name(endpoint))
 }
@@ -434,6 +452,9 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
     header.pack_start(&tabs_scroller);
     header.pack_start(&add_btn);
     header.pack_start(&add_revealer);
+    if cli.app.is_some() {
+        tabs_scroller.set_visible(false);
+    }
     header.pack_end(&fullscreen_btn);
     header.pack_end(&stats_btn);
     header.pack_end(&sound_btn);
@@ -633,8 +654,10 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
     // closed, then any named on the command line, which is shown first.
     let config = Config::load(&ui.config_path);
     let from_cli = endpoints_from_cli(cli);
-    for machine in &config.open {
-        open_session(&ui, ssh_endpoint(cli, machine));
+    if cli.app.is_none() {
+        for machine in &config.open {
+            open_session(&ui, ssh_endpoint(cli, machine));
+        }
     }
     for endpoint in from_cli.iter().cloned() {
         if find_session(&ui, machine_name(&endpoint)).is_none() {
@@ -719,6 +742,11 @@ fn install_address_bar(ui: &Rc<App>, connect_btn: &gtk::Button) {
 /// Show the address bar in place of the +, or fold it back. With no tabs
 /// the address bar is all there is, so it stays.
 fn show_address_bar(ui: &App, show: bool) {
+    if ui.cli.app.is_some() {
+        ui.add_revealer.set_reveal_child(false);
+        ui.add_btn.set_visible(false);
+        return;
+    }
     let show = show || ui.tabs.first_child().is_none();
     ui.add_revealer.set_reveal_child(show);
     ui.add_btn.set_visible(!show);
@@ -1097,13 +1125,16 @@ fn show_session(ui: &Rc<App>, s: &Rc<Session>) {
             ui.cli.no_clipboard,
             ui.local_clipboard.borrow().as_ref(),
         );
-        if matches!(s.endpoint, Endpoint::Ssh(_)) {
+        if matches!(s.endpoint, Endpoint::Ssh(_)) && ui.cli.app.is_none() {
             let mut config = Config::load(&ui.config_path);
             config.shown = Some(s.name.clone());
             save_config(ui, &config);
         }
     }
-    ui.window.set_title(Some(&window_title(&s.endpoint)));
+    ui.window.set_title(Some(&match &*s.app_title.borrow() {
+        Some(title) => format!("{title} ({})", s.name),
+        None => window_title(&s.endpoint),
+    }));
     show_status(ui, &s.status.borrow());
     ui.stats.set_text(&s.stats.borrow());
     ui.target.borrow_mut().take();
@@ -1154,7 +1185,7 @@ fn stop_session(ui: &Rc<App>, name: &str) {
     ui.transfers.clear_connection(s.conn.get());
     s.last_frame.borrow_mut().take();
     // A machine stopped by hand stays stopped when the window reopens.
-    if matches!(s.endpoint, Endpoint::Ssh(_)) {
+    if matches!(s.endpoint, Endpoint::Ssh(_)) && ui.cli.app.is_none() {
         let mut config = Config::load(&ui.config_path);
         config.set_open(&s.name, false);
         save_config(ui, &config);
@@ -1323,6 +1354,15 @@ fn remember_machine(ui: &Rc<App>, s: &Session) {
 /// The status keeps the error that ended the connection, if any, so it stays
 /// on screen while the reconnects run.
 fn schedule_reconnect(ui: Rc<App>, s: Rc<Session>, generation: u64, error: Option<&str>) {
+    // Reconnecting an app session would start the app again.
+    if ui.cli.app.is_some() || s.app_title.borrow().is_some() {
+        if let Some(error) = error {
+            *s.last_error.borrow_mut() = Some(error.to_owned());
+        }
+        s.gave_up.set(true);
+        set_status(&ui, &s, &app_ended_status(error));
+        return;
+    }
     let n = s.retries.get() + 1;
     s.retries.set(n);
     if let Some(error) = error {
@@ -1342,6 +1382,13 @@ fn schedule_reconnect(ui: Rc<App>, s: Rc<Session>, generation: u64, error: Optio
             start_session(ui, s);
         }
     });
+}
+
+fn app_ended_status(error: Option<&str>) -> String {
+    match error {
+        Some(e) => format!("Error: {e}\nThe connection to the app ended"),
+        None => "The connection to the app ended".into(),
+    }
 }
 
 /// Keep the latest failure visible while a new connection attempt runs.
@@ -1531,7 +1578,7 @@ fn poll_status(ui: Rc<App>, s: Rc<Session>, rx: Receiver<Status>, generation: u6
                     set_status(&ui, &s, "");
                     // Visible before the first per-second stats arrive.
                     set_stats(&ui, &s, &video);
-                    if !s.member.get() {
+                    if !s.member.get() && ui.cli.app.is_none() {
                         remember_machine(&ui, &s);
                     }
                     // A fresh server starts at its own default size; a
@@ -1658,6 +1705,20 @@ fn poll_status(ui: Rc<App>, s: Rc<Session>, rx: Receiver<Status>, generation: u6
                     if is_active(&ui, &s) {
                         refresh_screens(&ui);
                         apply_scaling(&ui);
+                    }
+                }
+                Status::AppTitle(title) => {
+                    if is_active(&ui, &s) {
+                        ui.window.set_title(Some(&format!("{title} ({})", s.name)));
+                    }
+                    *s.app_title.borrow_mut() = Some(title);
+                }
+                Status::AppClosed => {
+                    tracing::info!(machine = %s.name, "the app closed");
+                    s.gave_up.set(true);
+                    if ui.cli.app.is_some() {
+                        ui.window.close();
+                        return glib::ControlFlow::Break;
                     }
                 }
                 Status::Privacy(enabled) => {

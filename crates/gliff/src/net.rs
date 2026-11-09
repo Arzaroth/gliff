@@ -129,6 +129,10 @@ pub enum Status {
     },
     /// Privacy mode is on or off on the server.
     Privacy(bool),
+    /// The title of the app the session runs.
+    AppTitle(String),
+    /// The app the session runs has closed.
+    AppClosed,
     Closed,
 }
 
@@ -1009,6 +1013,12 @@ where
             ServerMsg::HelloAck { .. } => {}
             ServerMsg::Privacy { enabled } => {
                 let _ = status.send(Status::Privacy(enabled));
+            }
+            ServerMsg::AppTitle { title } => {
+                let _ = status.send(Status::AppTitle(title));
+            }
+            ServerMsg::AppClosed => {
+                let _ = status.send(Status::AppClosed);
             }
             ServerMsg::Outputs {
                 outputs,

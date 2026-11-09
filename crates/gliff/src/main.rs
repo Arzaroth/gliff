@@ -3282,6 +3282,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_pointer_scrolls_only_near_an_edge() {
+        assert_eq!(edge_direction(500.0, 400.0, 1000.0, 800.0), (0.0, 0.0));
+        assert_eq!(edge_direction(5.0, 400.0, 1000.0, 800.0), (-1.0, 0.0));
+        assert_eq!(edge_direction(990.0, 790.0, 1000.0, 800.0), (1.0, 1.0));
+        assert_eq!(edge_direction(500.0, 10.0, 1000.0, 800.0), (0.0, -1.0));
+    }
+
+    #[test]
     fn quality_presets_keep_their_names() {
         for (mode, _) in QUALITY_MODES {
             assert_eq!(quality_from_name(quality_name(*mode)), *mode);

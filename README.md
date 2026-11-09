@@ -21,6 +21,8 @@ both ends, and falls back to the CPU on machines where it cannot.
 - A shared clipboard in both directions: text, images, and copied files.
 - The remote machine's sound, in both directions, so two machines can show
   each other at once without echo.
+- Your microphone on the remote machine, as an input its applications can
+  record from.
 - Quality that adapts to the link, giving up frame rate before sharpness.
 - Reconnection when the link drops.
 - A window that follows your Omarchy theme.
@@ -31,6 +33,8 @@ both ends, and falls back to the CPU on machines where it cannot.
 - For sound from the remote: PipeWire (`pw-record`, `pw-dump`, `pw-link`),
   or PulseAudio's `parec`. Playback uses the client's ALSA default device;
   install `pipewire-alsa` or `pulseaudio-alsa` to route it through your sound server.
+- For the microphone: PipeWire on both machines (`pw-record` and
+  `pw-metadata` on yours, `pw-cli` and `pw-metadata` on the remote one).
 - ssh access from your machine to the remote one.
 - For GPU video: an AMD or Intel GPU with its Vulkan and VA-API drivers
   (on Arch, `vulkan-radeon` and `mesa` for AMD, or `vulkan-intel` and
@@ -127,6 +131,17 @@ included, and two such machines that show each other echo; mute one side to
 stop it. Hosts keep playing their sound on their own speakers. Sound is Opus
 at 128 kbit/s, and the client buffers 40 to 250 ms of it, more on a jittery
 link.
+
+**Microphone.** The microphone button in the header sends your microphone to
+the machine in the tab you look at. It starts off, and `gliff --mic` starts
+with it on. The remote machine gets an input named "Gliff microphone",
+which becomes its default input while your microphone is on; its previous
+default comes back when you turn the microphone off or disconnect. Gliff
+records your default input as it is when the microphone turns on, or the
+PipeWire node you name with `--mic-source` (`wpctl status` lists them), and
+stays on it. With speakers rather than a headset, the remote's sound reaches
+your microphone and goes back to it; name an echo-cancelled source, such as
+one from PipeWire's `module-echo-cancel`, with `--mic-source`.
 
 **Slow links.** gliff measures the link and lowers the frame rate, then the
 colour detail, then the resolution, and raises them again when there is

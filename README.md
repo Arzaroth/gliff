@@ -94,6 +94,12 @@ off it to get your own back. Press `Shift+Esc` to get your shortcuts back
 without moving the pointer. `--release-hotkey` changes that key (`ctrl+alt+q`,
 `double-escape`, or `none`).
 
+**Screen lock.** The ⋮ session menu's *Lock remote screen* locks the shown
+machine now, and *Lock when disconnecting* locks every machine whose
+connection ends, however it ends, and is remembered. The lock goes through
+logind, so the remote's own idle daemon shows its usual lock screen (on
+Omarchy, hypridle's `lock_cmd`).
+
 **Clipboard.** Copy on one machine and paste on the other. A copy announces
 only its types, and the contents are sent when the other side asks for them,
 normally when you paste. A paste that takes more than a second shows its

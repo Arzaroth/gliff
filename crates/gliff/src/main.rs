@@ -123,6 +123,11 @@ struct App {
     /// Size of the video widget in device pixels, rounded down to even.
     view_size: Cell<(u32, u32)>,
     view_scale: Cell<f64>,
+    /// The session menu, hidden until something adds an entry to it.
+    session_btn: gtk::MenuButton,
+    session_list: gtk::Box,
+    /// Tabs' machines lock their screens when the connection ends.
+    lock_on_disconnect: Cell<bool>,
     /// Evdev codes currently held on the remote, so they can all be released
     /// when the keyboard is handed back to the local compositor.
     pressed_keys: RefCell<BTreeSet<u32>>,
@@ -162,6 +167,10 @@ struct Session {
     /// The server streams a dedicated headless output: its frames carry the
     /// compositor-drawn cursor, so the local pointer is hidden over the video.
     headless: Cell<bool>,
+    /// The server can lock its screen.
+    lockable: Cell<bool>,
+    /// The connection (`conn`) last told to lock on disconnect.
+    lock_armed_conn: Cell<u64>,
     /// Size of the stream the server is sending, from the last decoded frame.
     stream_size: Cell<(u32, u32)>,
     /// The full-quality fit size the stream is drawn into; equals the stream
@@ -206,6 +215,8 @@ impl Session {
             remembered: Cell::new(false),
             connected: Cell::new(false),
             headless: Cell::new(false),
+            lockable: Cell::new(false),
+            lock_armed_conn: Cell::new(0),
             stream_size: Cell::new((0, 0)),
             stream_view: Cell::new((0, 0)),
             server_view: Cell::new((0, 0)),
@@ -323,6 +334,16 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
         .icon_name("utilities-system-monitor-symbolic")
         .tooltip_text("Show stats")
         .build();
+    let session_list = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(2)
+        .build();
+    let session_btn = gtk::MenuButton::builder()
+        .icon_name("view-more-symbolic")
+        .tooltip_text("Session")
+        .popover(&gtk::Popover::builder().child(&session_list).build())
+        .visible(false)
+        .build();
     let tabs = gtk::Box::builder().spacing(6).build();
     let tabs_scroller = gtk::ScrolledWindow::builder()
         .child(&tabs)
@@ -335,6 +356,7 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
     header.pack_start(&add_revealer);
     header.pack_end(&fullscreen_btn);
     header.pack_end(&stats_btn);
+    header.pack_end(&session_btn);
 
     let stats = gtk::Label::builder()
         .halign(gtk::Align::Start)
@@ -417,6 +439,9 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
         local_clipboard: RefCell::new(None),
         view_size: Cell::new((0, 0)),
         view_scale: Cell::new(1.0),
+        session_btn: session_btn.clone(),
+        session_list,
+        lock_on_disconnect: Cell::new(Config::load(&Config::default_path()).lock_on_disconnect),
         pressed_keys: RefCell::new(BTreeSet::new()),
         released: Cell::new(false),
         config_path: Config::default_path(),
@@ -430,6 +455,7 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
     });
     install_input_handlers(&ui, &video, &window, hotkey);
     install_resize_handler(&ui);
+    install_lock_entries(&ui);
     install_address_bar(&ui, &connect_btn);
     refresh_tabs(&ui);
 
@@ -1328,7 +1354,13 @@ fn poll_status(ui: Rc<App>, s: Rc<Session>, rx: Receiver<Status>, generation: u6
                     view_height,
                     fps_cap,
                     headless,
+                    lockable,
                 } => {
+                    s.lockable.set(lockable);
+                    let first_connected = s.lock_armed_conn.replace(s.conn.get()) != s.conn.get();
+                    if first_connected && lockable && ui.lock_on_disconnect.get() {
+                        send_to(&s, ClientMsg::LockOnDisconnect { enabled: true });
+                    }
                     s.server_view.set((view_width, view_height));
                     s.fps_cap.set(fps_cap);
                     s.headless.set(headless);
@@ -2234,6 +2266,60 @@ fn device_scale(ui: &App) -> f64 {
     ui.window
         .surface()
         .map_or(ui.video.scale_factor() as f64, |s| s.scale())
+}
+
+/// Lock the shown machine now, and have every tab's machine lock when its
+/// connection ends, a choice kept in the config.
+fn install_lock_entries(ui: &Rc<App>) {
+    let lock_now = gtk::Button::builder()
+        .label("Lock remote screen")
+        .has_frame(false)
+        .build();
+    let weak = Rc::downgrade(ui);
+    lock_now.connect_clicked(move |_| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        ui.session_btn.popdown();
+        if let Some(s) = active(&ui).filter(|s| s.lockable.get()) {
+            send_to(&s, ClientMsg::LockScreen);
+        }
+    });
+    add_session_entry(ui, &lock_now);
+    let lock_later = gtk::CheckButton::with_label("Lock when disconnecting");
+    lock_later.set_active(ui.lock_on_disconnect.get());
+    let weak = Rc::downgrade(ui);
+    lock_later.connect_toggled(move |check| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let enabled = check.is_active();
+        ui.lock_on_disconnect.set(enabled);
+        let mut config = Config::load(&ui.config_path);
+        config.lock_on_disconnect = enabled;
+        save_config(&ui, &config);
+        for s in ui.sessions.borrow().iter().filter(|s| s.lockable.get()) {
+            send_to(s, ClientMsg::LockOnDisconnect { enabled });
+        }
+    });
+    add_session_entry(ui, &lock_later);
+    let weak = Rc::downgrade(ui);
+    ui.session_btn
+        .popover()
+        .expect("the session menu has a popover")
+        .connect_show(move |_| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            lock_now
+                .set_sensitive(active(&ui).is_some_and(|s| s.connected.get() && s.lockable.get()));
+        });
+}
+
+/// Add an entry to the session menu, which shows from its first entry on.
+fn add_session_entry(ui: &App, entry: &impl IsA<gtk::Widget>) {
+    ui.session_list.append(entry);
+    ui.session_btn.set_visible(true);
 }
 
 #[cfg(test)]

@@ -229,6 +229,16 @@ Every crate with `unsafe` documents the safety requirements at each block.
   never baked into the video. An image with no visible shape falls back to the
   default pointer (see `hardware-quirks.md` for why Hyprland sends those).
 
+- **Screen lock.** A server that listed the `lock` feature reads the user's
+  graphical session from logind (`loginctl show-user <uid> -p Display`)
+  and runs `loginctl lock-session` on it, for `ClientMsg::LockScreen` and,
+  once `LockOnDisconnect` armed it, from a guard dropped on every way out
+  of the session. logind sends that session a Lock signal, which the
+  desktop's idle daemon answers with its own lock screen; logind lets the
+  session's owner lock it without a polkit prompt. The client arms it on
+  each connection when the option is on, and on every open connection when
+  it changes.
+
 - **Clipboard.** Lazy, typed and chunked; `gliff_proto::clipboard` has the
   rules and `gliff_transport::clipboard` the engine both peers run. A new
   selection is announced as an `Offer` of mime types (plus a file list when it

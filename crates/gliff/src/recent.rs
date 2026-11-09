@@ -17,6 +17,9 @@ pub struct Config {
     /// The machine the window showed last.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shown: Option<String>,
+    /// Every tab's machine locks its screen when its connection ends.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lock_on_disconnect: bool,
 }
 
 impl Config {

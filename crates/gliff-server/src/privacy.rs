@@ -419,3 +419,28 @@ delegate_noop!(State: ignore WlShm);
 delegate_noop!(State: ignore WlShmPool);
 delegate_noop!(State: ignore WlBuffer);
 delegate_noop!(State: ignore ZwlrLayerShellV1);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_physical_devices_are_turned_off() {
+        for name in [
+            "at-translated-set-2-keyboard",
+            "pixa3854:00-093a:0274-touchpad",
+            "wl_keyboard",
+        ] {
+            assert!(is_physical(name), "{name}");
+        }
+        for name in [
+            "hl-virtual-keyboard-gliff-server",
+            "hl-virtual-keyboard-fcitx5",
+            "virtual-keyboard",
+            "unknown-device",
+            "unknown-device-1",
+        ] {
+            assert!(!is_physical(name), "{name}");
+        }
+    }
+}

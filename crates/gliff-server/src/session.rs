@@ -34,6 +34,8 @@ use crate::notify;
 
 pub struct Config {
     pub target: Target,
+    /// A command to run as the session's only app, on its private screen.
+    pub app: Option<String>,
     pub output: Option<String>,
     pub render_node: PathBuf,
     pub low_bandwidth: bool,
@@ -107,6 +109,16 @@ where
     .await?;
     let output = report_setup(&mut writer, setup_output(&instance, &cfg, &caps)).await?;
     tracing::info!(output = %output.name, output.width, output.height, headless = output.is_headless(), "session output ready");
+    let mut app = match &cfg.app {
+        Some(command) => Some(
+            report_setup(
+                &mut writer,
+                crate::app::App::launch(&instance, &output.name, command),
+            )
+            .await?,
+        ),
+        None => None,
+    };
 
     let video = VideoTier::open(cfg.video, cfg.capture, &cfg.render_node);
     let codec = Codec::H264;
@@ -264,6 +276,15 @@ where
         cursor_shape_id: 0,
     };
 
+    let app_supported = session
+        .caps
+        .features
+        .iter()
+        .any(|feature| feature == gliff_proto::FEATURE_APP);
+    let mut app_tick = tokio::time::interval(Duration::from_millis(500));
+    // Once the app has closed: when to stop waiting for the writer to send
+    // the last messages, AppClosed among them.
+    let mut closing: Option<tokio::time::Instant> = None;
     loop {
         let flow = tokio::select! {
             msg = msg_rx.recv() => match msg {
@@ -293,6 +314,30 @@ where
                 ControlFlow::Continue(())
             }
             ev = cap_rx.recv() => session.on_capture(ev)?,
+            _ = app_tick.tick(), if app.is_some() => {
+                match app.as_mut().map(crate::app::App::poll) {
+                    Some(crate::app::Poll::Title(title)) if app_supported => {
+                        session.writer.send(ServerMsg::AppTitle { title }, Vec::new());
+                        ControlFlow::Continue(())
+                    }
+                    Some(crate::app::Poll::Closed) => {
+                        app = None;
+                        if app_supported {
+                            session.writer.send(ServerMsg::AppClosed, Vec::new());
+                            closing = Some(tokio::time::Instant::now() + Duration::from_secs(1));
+                            ControlFlow::Continue(())
+                        } else {
+                            ControlFlow::Break(())
+                        }
+                    }
+                    _ => ControlFlow::Continue(()),
+                }
+            }
+            _ = tokio::time::sleep_until(closing.unwrap_or_else(tokio::time::Instant::now)),
+                if closing.is_some() =>
+            {
+                ControlFlow::Break(())
+            }
             report = write_reports.recv() => {
                 let elapsed = report.context("writer task ended")??;
                 // A write that took longer than a frame interval means the
@@ -300,7 +345,11 @@ where
                 if elapsed > session.frame_interval() {
                     session.ctl.note_writer_blocked();
                 }
-                ControlFlow::Continue(())
+                if closing.is_some() && session.writer.is_empty() {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
             }
             // The one-shot first-frame rescue: a static screen produces no
             // damage, so the capture never completes; retry it once with
@@ -332,9 +381,12 @@ where
         if flow.is_break() {
             break;
         }
-        session.pump_encoder()?;
+        if closing.is_none() {
+            session.pump_encoder()?;
+        }
     }
 
+    drop(app);
     // Dropping the session ends it in order; see `impl Drop for Session`.
     drop(session);
     Ok(())

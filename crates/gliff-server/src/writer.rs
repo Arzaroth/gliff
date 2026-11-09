@@ -53,7 +53,7 @@ impl Queue {
                     ServerMsg::CursorShape { .. } | ServerMsg::CursorPos { .. }
                 )
             }),
-            ServerMsg::CursorPos { .. } | ServerMsg::Pong { .. } => {
+            ServerMsg::CursorPos { .. } | ServerMsg::Pong { .. } | ServerMsg::AppTitle { .. } => {
                 self.packets.retain(|(queued, _)| {
                     std::mem::discriminant(queued) != std::mem::discriminant(&msg)
                 });
@@ -64,7 +64,8 @@ impl Queue {
             | ServerMsg::ClipboardRequest { .. }
             | ServerMsg::ClipboardData { .. }
             | ServerMsg::ClipboardAck { .. }
-            | ServerMsg::ClipboardAbort { .. } => {}
+            | ServerMsg::ClipboardAbort { .. }
+            | ServerMsg::AppClosed => {}
             _ => unreachable!("unsupported queued server message"),
         }
         self.packets.push_back((msg, payloads));
@@ -132,6 +133,11 @@ impl Writer {
     /// True when no video frame is waiting to be written.
     pub fn video_ready(&self) -> bool {
         self.queue.borrow().video_ready()
+    }
+
+    /// Nothing waits to be written.
+    pub fn is_empty(&self) -> bool {
+        self.queue.borrow().packets.is_empty()
     }
 }
 
@@ -232,6 +238,24 @@ mod tests {
             ServerMsg::StreamConfig { width: 1799, .. }
         ));
         assert!(!queue.video_ready());
+    }
+
+    #[test]
+    fn app_titles_coalesce_but_the_close_always_waits() {
+        let mut queue = Queue::default();
+        for title in ["a", "b"] {
+            queue.push(
+                ServerMsg::AppTitle {
+                    title: title.into(),
+                },
+                Vec::new(),
+            );
+        }
+        queue.push(ServerMsg::AppClosed, Vec::new());
+        queue.push(ServerMsg::AppClosed, Vec::new());
+        assert_eq!(queue.packets.len(), 3);
+        assert!(matches!(&queue.packets[0].0, ServerMsg::AppTitle { title } if title == "b"));
+        assert!(matches!(queue.packets[2].0, ServerMsg::AppClosed));
     }
 
     #[test]

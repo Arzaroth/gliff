@@ -4,6 +4,7 @@
 
 #![forbid(unsafe_code)]
 
+mod app;
 mod clipboard;
 mod notify;
 mod rate;
@@ -43,6 +44,10 @@ struct Cli {
     /// window instead of mirroring.
     #[arg(long)]
     headless: bool,
+    /// Run this command on the private screen as the session's only app,
+    /// and end the session when it closes. Implies `--headless`.
+    #[arg(long, value_name = "COMMAND", conflicts_with = "output")]
+    app: Option<String>,
     /// Hyprland instance signature (default: newest).
     #[arg(long)]
     instance: Option<String>,
@@ -94,7 +99,8 @@ fn main() -> Result<()> {
     let render_node = hypr_capture::render_node_for_target(cli.render_node.as_deref(), &target);
     let cfg = session::Config {
         target,
-        output: if cli.headless {
+        app: cli.app.clone(),
+        output: if cli.headless || cli.app.is_some() {
             None
         } else {
             Some(cli.output.clone().unwrap_or_else(|| "auto".into()))

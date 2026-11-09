@@ -762,6 +762,7 @@ dependencies = [
  "hypr-input",
  "hypr-ipc",
  "hypr-wl",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

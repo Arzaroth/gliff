@@ -34,7 +34,11 @@ pub const PROTOCOL_VERSION: u16 = 1;
 
 /// Optional behaviours this build supports, exchanged in the handshake. A
 /// behaviour is used only when both ends list it.
-pub const FEATURES: &[&str] = &[];
+pub const FEATURES: &[&str] = &[FEATURE_APP];
+
+/// A session that runs one app on its private screen: the server sends
+/// `AppTitle` as the app's title changes and `AppClosed` when it is gone.
+pub const FEATURE_APP: &str = "app";
 
 pub fn features() -> Vec<String> {
     FEATURES.iter().map(|f| f.to_string()).collect()
@@ -462,6 +466,16 @@ pub enum ServerMsg {
         #[n(0)]
         t: u64,
     },
+    /// The title of the app this session runs. Sent only to a client that
+    /// listed [`FEATURE_APP`].
+    #[n(17)]
+    AppTitle {
+        #[n(0)]
+        title: String,
+    },
+    /// The app this session runs closed its last window; the session ends.
+    #[n(18)]
+    AppClosed,
 }
 
 impl ServerMsg {
@@ -775,6 +789,8 @@ mod tests {
                 "8202860102f5818400000a0a18641832",
             ),
             (ServerMsg::error(ERROR_VERSION, "m"), "82098301616d01"),
+            (ServerMsg::AppTitle { title: "x".into() }, "8211816178"),
+            (ServerMsg::AppClosed, "821280"),
         ];
         for (msg, bytes) in server {
             assert_eq!(hex(&minicbor::to_vec(&msg).unwrap()), bytes, "{msg:?}");

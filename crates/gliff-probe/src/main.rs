@@ -734,6 +734,8 @@ fn serve_test(node: &std::path::Path, addr: &str, frames: usize, video: VideoMod
                     scaled = if session.headless { scale_milli == 2000 } else { w <= 800 && h <= 600 && scale_milli < 1000 };
                 }
                 ServerMsg::CursorShape { argb_len, .. } => { let _ = reader.read_payload(argb_len).await?; }
+                ServerMsg::AppTitle { title } => eprintln!("APP-TITLE: {title}"),
+                ServerMsg::AppClosed => { eprintln!("APP-CLOSED"); break; }
                 // The server offers its selection; ask for one item and keep it once complete.
                 ServerMsg::ClipboardOffer { serial, mime_types, files } => {
                     recv_serial = serial;

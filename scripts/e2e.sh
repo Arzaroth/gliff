@@ -17,6 +17,9 @@
 #  10. a keymap sent mid-session is the one the compositor serves its clients
 #  11. a keymap change mid-session reaches clients behind an input method
 #      (fcitx5), when fcitx5 and foot are installed
+#  12. focus changes do not stack shortcut-inhibit handlers
+#  17. an app session opens the app fullscreen on its own screen, reports its
+#      title, and ends with the app, or closes it when the client leaves
 #
 # Exits non-zero on the first failure.
 set -uo pipefail
@@ -372,5 +375,36 @@ inhibits=$(grep -c "compositor shortcut inhibit" "$ilog")
     || fail "$inhibits shortcut-inhibit notifications for $focused focus changes"
 rm -rf "$ixdg" "$txdg" "$ilog"
 echo "   shortcut inhibit PASS"
+
+echo "== 17. remote apps =="
+if command -v foot >/dev/null; then
+    app_windows() { hyprctl clients -j | python3 -c "import sys,json; print(sum(1 for c in json.load(sys.stdin) if c['workspace']['name'].startswith('gliff-app-')))"; }
+    app_screens() { hyprctl monitors -j | python3 -c "import sys,json; print(sum(1 for m in json.load(sys.stdin) if m['name'].startswith('gliff-')))"; }
+    run_app() {
+        "$SERVER" --listen 127.0.0.1:9056 --app "foot -T 'e2e app' sleep 600" --instance "$NEST_SIG" >/tmp/gliff-e2e-app-server.log 2>&1 &
+        apsp=$!; PIDS+=("$apsp"); sleep 2
+        applog=$(mktemp)
+        timeout 60 $PROBE --video "$CLIENT_VIDEO" serve-test --connect 127.0.0.1:9056 --frames 100000 >"$applog" 2>&1 &
+        apcp=$!; PIDS+=("$apcp")
+        wait_recv "APP-TITLE: e2e app" "$applog" || fail "remote app: no title ($(tail -3 "$applog" | tr '\n' ' '))"
+    }
+    run_app
+    read -r appaddr appfull < <(hyprctl clients -j | python3 -c "import sys,json; c=next(c for c in json.load(sys.stdin) if c['workspace']['name'].startswith('gliff-app-')); print(c['address'], c['fullscreen'])")
+    [ "$appfull" != 0 ] || fail "remote app: the window is not fullscreen on its screen"
+    hyprctl dispatch "hl.dsp.window.close({ window = \"address:$appaddr\" })" >/dev/null
+    wait_recv "APP-CLOSED" "$applog" || fail "remote app: the client was not told the app closed"
+    for _ in $(seq 1 30); do kill -0 "$apsp" 2>/dev/null || break; sleep 0.2; done
+    kill -0 "$apsp" 2>/dev/null && fail "remote app: the session outlived its app"
+    [ "$(app_screens)" = 0 ] || fail "remote app: the private screen outlived the app"
+    run_app
+    kill "$apcp"
+    for _ in $(seq 1 30); do [ "$(app_windows)" = 0 ] && break; sleep 0.2; done
+    [ "$(app_windows)" = 0 ] || fail "remote app: the app outlived the client"
+    kill "$apsp" 2>/dev/null; sleep 1
+    rm -f "$applog"
+    echo "   remote apps PASS"
+else
+    echo "   skipped (needs foot)"
+fi
 
 echo "E2E PASS: all checks passed"

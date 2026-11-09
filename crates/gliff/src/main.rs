@@ -362,6 +362,24 @@ fn machine_name(endpoint: &Endpoint) -> &str {
 
 /// Title in the `Document — App` form used by GNOME apps, so the machine
 /// is what a task switcher shows first.
+/// Start another gliff window running `command` on `target`'s machine.
+fn open_remote_app(target: &SshTarget, command: &str) -> std::io::Result<()> {
+    std::process::Command::new(std::env::current_exe()?)
+        .args(remote_app_args(target, command))
+        .spawn()
+        .map(drop)
+}
+
+fn remote_app_args(target: &SshTarget, command: &str) -> Vec<String> {
+    vec![
+        "--app".into(),
+        command.into(),
+        "--server-bin".into(),
+        target.server_bin.clone(),
+        target.host.clone(),
+    ]
+}
+
 /// `text` quoted for a POSIX shell: ssh hands the remote shell its
 /// arguments joined into one command line.
 fn shell_quote(text: &str) -> String {
@@ -2978,6 +2996,31 @@ fn install_session_menu(ui: &Rc<App>) {
         });
     }
     ui.session_list.append(&privacy);
+    let app_entry = gtk::Entry::builder()
+        .placeholder_text("Open a remote app…")
+        .tooltip_text("A command to run on the shown machine, in a window of its own")
+        .margin_top(6)
+        .build();
+    let weak = Rc::downgrade(ui);
+    app_entry.connect_activate(move |entry| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let command = entry.text().trim().to_string();
+        let Some(Endpoint::Ssh(target)) = active(&ui).map(|s| s.endpoint.clone()) else {
+            return;
+        };
+        if command.is_empty() {
+            return;
+        }
+        ui.session_btn.popdown();
+        entry.set_text("");
+        match open_remote_app(&target, &command) {
+            Ok(()) => show_hint(&ui, &format!("Opening {command}…")),
+            Err(e) => show_hint(&ui, &format!("Cannot open {command}: {e}")),
+        }
+    });
+    ui.session_list.append(&app_entry);
     let weak = Rc::downgrade(ui);
     let popover = ui
         .session_btn
@@ -2994,6 +3037,9 @@ fn install_session_menu(ui: &Rc<App>) {
         let coverable = active(&ui).filter(|s| s.connected.get() && s.coverable.get());
         privacy_syncing.set(true);
         privacy.set_sensitive(coverable.is_some());
+        app_entry.set_sensitive(
+            active(&ui).is_some_and(|s| matches!(s.endpoint, Endpoint::Ssh(_)) && !s.member.get()),
+        );
         privacy.set_active(coverable.is_some_and(|s| s.privacy_on.get()));
         privacy_syncing.set(false);
         let shown = active(&ui);

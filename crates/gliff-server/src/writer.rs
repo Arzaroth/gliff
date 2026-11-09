@@ -205,6 +205,11 @@ impl Writer {
     pub fn video_ready(&self) -> bool {
         self.queue.borrow().video_ready()
     }
+
+    /// Nothing waits to be written.
+    pub fn is_empty(&self) -> bool {
+        self.queue.borrow().packets.is_empty()
+    }
 }
 
 impl Drop for Writer {

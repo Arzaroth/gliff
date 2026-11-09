@@ -41,6 +41,7 @@ pub const FEATURES: &[&str] = &[
     FEATURE_LOCK,
     FEATURE_QUALITY,
     FEATURE_PRIVACY,
+    FEATURE_APP,
 ];
 
 /// Sound: the client turns it on with `ClientMsg::Audio`, and the server then

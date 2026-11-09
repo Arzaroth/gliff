@@ -94,6 +94,11 @@ off it to get your own back. Press `Shift+Esc` to get your shortcuts back
 without moving the pointer. `--release-hotkey` changes that key (`ctrl+alt+q`,
 `double-escape`, or `none`).
 
+**Actual size.** The ⋮ session menu's *Actual size* shows a mirrored screen
+pixel for pixel instead of fitted to the window; the picture scrolls when
+the pointer rests near an edge of the window. A private screen is always
+at actual size.
+
 **Clipboard.** Copy on one machine and paste on the other. A copy announces
 only its types, and the contents are sent when the other side asks for them,
 normally when you paste. A paste that takes more than a second shows its

@@ -229,6 +229,16 @@ Every crate with `unsafe` documents the safety requirements at each block.
   never baked into the video. An image with no visible shape falls back to the
   default pointer (see `hardware-quirks.md` for why Hyprland sends those).
 
+- **Actual size.** Client-side: the picture sits in a `ScrolledWindow`
+  that never scrolls when fitted. At actual size the picture gets the
+  mirrored screen's size from the `HelloAck` output list (divided by the
+  device scale) as its size request and the scroller shows scrollbars; the
+  resize handler then reports the larger picture, so `fit_mirror` stops
+  scaling the stream down, and the paintable lands on a factor of exactly
+  1. Pointer mapping already works in picture coordinates, so it needs
+  nothing. A timer scrolls while the pointer rests within 32 px of a
+  viewport edge and resends the pointer, since the content moves under it.
+
 - **Clipboard.** Lazy, typed and chunked; `gliff_proto::clipboard` has the
   rules and `gliff_transport::clipboard` the engine both peers run. A new
   selection is announced as an `Offer` of mime types (plus a file list when it

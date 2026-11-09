@@ -87,6 +87,14 @@ struct App {
     window: adw::ApplicationWindow,
     /// The picture, upcast; input controllers attach to it and we measure it.
     video: gtk::Widget,
+    /// Holds the picture; it scrolls only at actual size.
+    scroller: gtk::ScrolledWindow,
+    /// Show a mirrored screen at its own pixel size, scrolling, rather than
+    /// fitted to the window.
+    actual_size: Cell<bool>,
+    /// While the pointer rests near an edge of the scrolled picture.
+    edge_scroll: Cell<Option<EdgeScroll>>,
+    edge_timer: Cell<bool>,
     /// What the picture shows: the latest frame fitted to the window.
     frame: paintable::FramePaintable,
     stats: gtk::Label,
@@ -123,6 +131,9 @@ struct App {
     /// Size of the video widget in device pixels, rounded down to even.
     view_size: Cell<(u32, u32)>,
     view_scale: Cell<f64>,
+    /// The session menu, hidden until something adds an entry to it.
+    session_btn: gtk::MenuButton,
+    session_list: gtk::Box,
     /// Evdev codes currently held on the remote, so they can all be released
     /// when the keyboard is handed back to the local compositor.
     pressed_keys: RefCell<BTreeSet<u32>>,
@@ -162,6 +173,8 @@ struct Session {
     /// The server streams a dedicated headless output: its frames carry the
     /// compositor-drawn cursor, so the local pointer is hidden over the video.
     headless: Cell<bool>,
+    /// The pixel size of the screen the server shows, when it said.
+    screen: Cell<Option<(u32, u32)>>,
     /// Size of the stream the server is sending, from the last decoded frame.
     stream_size: Cell<(u32, u32)>,
     /// The full-quality fit size the stream is drawn into; equals the stream
@@ -206,6 +219,7 @@ impl Session {
             remembered: Cell::new(false),
             connected: Cell::new(false),
             headless: Cell::new(false),
+            screen: Cell::new(None),
             stream_size: Cell::new((0, 0)),
             stream_view: Cell::new((0, 0)),
             server_view: Cell::new((0, 0)),
@@ -323,6 +337,16 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
         .icon_name("utilities-system-monitor-symbolic")
         .tooltip_text("Show stats")
         .build();
+    let session_list = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(2)
+        .build();
+    let session_btn = gtk::MenuButton::builder()
+        .icon_name("view-more-symbolic")
+        .tooltip_text("Session")
+        .popover(&gtk::Popover::builder().child(&session_list).build())
+        .visible(false)
+        .build();
     let tabs = gtk::Box::builder().spacing(6).build();
     let tabs_scroller = gtk::ScrolledWindow::builder()
         .child(&tabs)
@@ -335,6 +359,7 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
     header.pack_start(&add_revealer);
     header.pack_end(&fullscreen_btn);
     header.pack_end(&stats_btn);
+    header.pack_end(&session_btn);
 
     let stats = gtk::Label::builder()
         .halign(gtk::Align::Start)
@@ -377,8 +402,13 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
     let video: gtk::Widget = picture.clone().upcast();
 
     let transfers = Rc::new(clipboard_ui::TransferBars::new());
+    let scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Never)
+        .child(&video)
+        .build();
     let overlay = gtk::Overlay::new();
-    overlay.set_child(Some(&video));
+    overlay.set_child(Some(&scroller));
     overlay.add_overlay(&stats);
     overlay.add_overlay(transfers.widget());
     overlay.add_overlay(&status);
@@ -400,6 +430,10 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
     let ui = Rc::new(App {
         window: window.clone(),
         video: video.clone(),
+        scroller: scroller.clone(),
+        actual_size: Cell::new(false),
+        edge_scroll: Cell::new(None),
+        edge_timer: Cell::new(false),
         frame,
         stats: stats.clone(),
         status: status.clone(),
@@ -417,6 +451,8 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
         local_clipboard: RefCell::new(None),
         view_size: Cell::new((0, 0)),
         view_scale: Cell::new(1.0),
+        session_btn: session_btn.clone(),
+        session_list,
         pressed_keys: RefCell::new(BTreeSet::new()),
         released: Cell::new(false),
         config_path: Config::default_path(),
@@ -430,6 +466,7 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
     });
     install_input_handlers(&ui, &video, &window, hotkey);
     install_resize_handler(&ui);
+    install_actual_size_entry(&ui);
     install_address_bar(&ui, &connect_btn);
     refresh_tabs(&ui);
 
@@ -982,6 +1019,7 @@ fn show_session(ui: &Rc<App>, s: &Rc<Session>) {
         Some((texture, view)) => ui.frame.set_frame(texture.clone(), device_scale(ui), *view),
         None => ui.frame.clear(),
     }
+    apply_scaling(ui);
     ui.video.set_cursor(s.cursor.borrow().as_ref());
     // A background session kept the size the window had when it was last
     // shown.
@@ -999,6 +1037,7 @@ fn show_nothing(ui: &Rc<App>) {
     show_status(ui, "Not connected");
     ui.stats.set_text("");
     ui.frame.clear();
+    apply_scaling(ui);
     ui.video.set_cursor(None);
     refresh_tabs(ui);
 }
@@ -1328,7 +1367,9 @@ fn poll_status(ui: Rc<App>, s: Rc<Session>, rx: Receiver<Status>, generation: u6
                     view_height,
                     fps_cap,
                     headless,
+                    screen,
                 } => {
+                    s.screen.set(screen);
                     s.server_view.set((view_width, view_height));
                     s.fps_cap.set(fps_cap);
                     s.headless.set(headless);
@@ -1349,6 +1390,7 @@ fn poll_status(ui: Rc<App>, s: Rc<Session>, rx: Receiver<Status>, generation: u6
                     // reduced-resolution stream never triggers one. A
                     // background session is resized when it is shown.
                     if is_active(&ui, &s) {
+                        apply_scaling(&ui);
                         request_resize(&ui);
                         if headless && s.cursor.borrow().is_none() {
                             let cursor = hidden_cursor();
@@ -1870,6 +1912,7 @@ fn install_input_handlers(
     {
         let ui = ui.clone();
         motion.connect_motion(move |_, x, y| {
+            edge_scroll(&ui, x, y);
             let (rx, ry) = to_remote(&ui, x, y);
             send(&ui, ClientMsg::PointerMotion { x: rx, y: ry });
         });
@@ -1893,6 +1936,7 @@ fn install_input_handlers(
             // A deliberate release lasts only as long as the pointer rests on
             // the picture; leaving and coming back captures again.
             ui.released.set(false);
+            ui.edge_scroll.set(None);
             if gtk::prelude::GtkWindowExt::focus(&window).is_some_and(|f| f == ui.video) {
                 gtk::prelude::GtkWindowExt::set_focus(&window, gtk::Widget::NONE);
             }
@@ -2236,10 +2280,149 @@ fn device_scale(ui: &App) -> f64 {
         .map_or(ui.video.scale_factor() as f64, |s| s.scale())
 }
 
+/// *Actual size*: a mirrored screen pixel for pixel, scrolling at the
+/// window's edges, instead of fitted to the window.
+fn install_actual_size_entry(ui: &Rc<App>) {
+    let actual = gtk::CheckButton::with_label("Actual size");
+    actual.set_tooltip_text(Some(
+        "Show the remote screen pixel for pixel, scrolling at the window's edges",
+    ));
+    let weak = Rc::downgrade(ui);
+    actual.connect_toggled(move |check| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        if ui.actual_size.replace(check.is_active()) != check.is_active() {
+            apply_scaling(&ui);
+        }
+    });
+    add_session_entry(ui, &actual);
+    let weak = Rc::downgrade(ui);
+    ui.session_btn
+        .popover()
+        .expect("the session menu has a popover")
+        .connect_show(move |_| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            actual.set_sensitive(active(&ui).is_some_and(|s| actual_size_of(&s).is_some()));
+            actual.set_active(ui.actual_size.get());
+        });
+}
+
+/// The pixel size of the screen `s` mirrors, when it can be shown at actual
+/// size: a private screen is already sized to the window.
+fn actual_size_of(s: &Session) -> Option<(u32, u32)> {
+    if s.headless.get() || !s.connected.get() {
+        return None;
+    }
+    s.screen.get()
+}
+
+/// Size the picture to the remote screen's pixels and let it scroll, or fit
+/// it to the window again. The resize handler then asks the server for the
+/// matching stream size.
+fn apply_scaling(ui: &App) {
+    let size = active(ui)
+        .filter(|_| ui.actual_size.get())
+        .and_then(|s| actual_size_of(&s));
+    let policy = match size {
+        Some((width, height)) => {
+            let device = device_scale(ui);
+            ui.video.set_size_request(
+                (width as f64 / device).round() as i32,
+                (height as f64 / device).round() as i32,
+            );
+            gtk::PolicyType::Automatic
+        }
+        None => {
+            ui.video.set_size_request(-1, -1);
+            ui.edge_scroll.set(None);
+            gtk::PolicyType::Never
+        }
+    };
+    ui.scroller.set_policy(policy, policy);
+}
+
+/// A scroll direction (-1, 0 or 1 on each axis) and the pointer in
+/// viewport coordinates.
+type EdgeScroll = ((f64, f64), (f64, f64));
+
+/// Pixels from a viewport edge where the pointer scrolls the picture, and
+/// how far each tick scrolls.
+const EDGE: f64 = 32.0;
+const EDGE_STEP: f64 = 16.0;
+
+/// The direction a pointer at `(x, y)` in a `width` x `height` viewport
+/// scrolls: -1, 0 or 1 on each axis.
+fn edge_direction(x: f64, y: f64, width: f64, height: f64) -> (f64, f64) {
+    let axis = |v: f64, extent: f64| {
+        if v < EDGE {
+            -1.0
+        } else if v > extent - EDGE {
+            1.0
+        } else {
+            0.0
+        }
+    };
+    (axis(x, width), axis(y, height))
+}
+
+/// Scroll the picture while the pointer rests near an edge of the viewport,
+/// moving the remote pointer with the content under it.
+fn edge_scroll(ui: &Rc<App>, x: f64, y: f64) {
+    if ui.scroller.hscrollbar_policy() == gtk::PolicyType::Never {
+        return;
+    }
+    let (h, v) = (ui.scroller.hadjustment(), ui.scroller.vadjustment());
+    let at = (x - h.value(), y - v.value());
+    let direction = edge_direction(
+        at.0,
+        at.1,
+        ui.scroller.width() as f64,
+        ui.scroller.height() as f64,
+    );
+    if direction == (0.0, 0.0) {
+        ui.edge_scroll.set(None);
+        return;
+    }
+    ui.edge_scroll.set(Some((direction, at)));
+    if ui.edge_timer.replace(true) {
+        return;
+    }
+    let ui = ui.clone();
+    glib::timeout_add_local(Duration::from_millis(16), move || {
+        let Some(((dx, dy), (vx, vy))) = ui.edge_scroll.get() else {
+            ui.edge_timer.set(false);
+            return glib::ControlFlow::Break;
+        };
+        let (h, v) = (ui.scroller.hadjustment(), ui.scroller.vadjustment());
+        h.set_value(h.value() + dx * EDGE_STEP);
+        v.set_value(v.value() + dy * EDGE_STEP);
+        let (rx, ry) = to_remote(&ui, vx + h.value(), vy + v.value());
+        send(&ui, ClientMsg::PointerMotion { x: rx, y: ry });
+        glib::ControlFlow::Continue
+    });
+}
+
+/// Add an entry to the session menu, which shows from its first entry on.
+fn add_session_entry(ui: &App, entry: &impl IsA<gtk::Widget>) {
+    ui.session_list.append(entry);
+    ui.session_btn.set_visible(true);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    #[test]
+    fn the_pointer_scrolls_only_near_an_edge() {
+        assert_eq!(edge_direction(500.0, 400.0, 1000.0, 800.0), (0.0, 0.0));
+        assert_eq!(edge_direction(5.0, 400.0, 1000.0, 800.0), (-1.0, 0.0));
+        assert_eq!(edge_direction(990.0, 790.0, 1000.0, 800.0), (1.0, 1.0));
+        assert_eq!(edge_direction(500.0, 10.0, 1000.0, 800.0), (0.0, -1.0));
+    }
 
     type Input = tokio::sync::mpsc::UnboundedReceiver<clipboard::ToWorker>;
 

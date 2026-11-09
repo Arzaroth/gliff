@@ -72,6 +72,8 @@ pub enum Status {
         /// The server serves a dedicated headless output whose frames carry
         /// the compositor-drawn cursor.
         headless: bool,
+        /// The pixel size of the screen the server shows, when it said.
+        screen: Option<(u32, u32)>,
     },
     Stats {
         fps: f32,
@@ -486,12 +488,14 @@ where
     // estimate is seeded ahead of the first frame ack.
     let mut got_ack = false;
     let mut headless = false;
+    let mut screen = None;
     let (mut cfg, pipeline) = loop {
         match reader.read_msg::<ServerMsg>().await? {
             ServerMsg::HelloAck {
                 version,
                 features,
                 session,
+                outputs,
                 ..
             } => {
                 if version != PROTOCOL_VERSION {
@@ -501,6 +505,10 @@ where
                 }
                 tracing::debug!(?features, "server features");
                 headless = session.headless;
+                screen = outputs
+                    .iter()
+                    .find(|o| o.name == session.output)
+                    .map(|o| (o.width, o.height));
                 got_ack = true;
             }
             ServerMsg::Ping { t } => writer.write_msg(&ClientMsg::Pong { t }).await?,
@@ -541,6 +549,7 @@ where
         view_height: cfg.view.1,
         fps_cap: cfg.fps_cap,
         headless,
+        screen,
     });
     let decode_on = match (&decoder, &gpu) {
         (VideoDecoder::Gpu(_), Some(g)) => g.name.as_str(),
@@ -876,6 +885,7 @@ where
                     view_height,
                     fps_cap,
                     headless,
+                    screen,
                 });
             }
             ServerMsg::CursorShape {

@@ -153,6 +153,53 @@ impl Instance {
         self.request_json("monitors all")
     }
 
+    pub fn clients(&self) -> Result<Vec<Client>> {
+        self.request_json("clients")
+    }
+
+    /// Pin the named workspace `workspace` to `monitor` with no gaps,
+    /// border or rounding, so its one window fills the monitor. A legacy
+    /// config takes the `workspace` keyword; a Lua config takes
+    /// `hl.workspace_rule` through `eval`.
+    pub fn bare_workspace_on(&self, workspace: &str, monitor: &str) -> Result<()> {
+        let keyword = format!(
+            "keyword workspace name:{workspace}, monitor:{monitor}, gapsout:0, gapsin:0, border:false, rounding:false"
+        );
+        match self.dispatch(&keyword) {
+            Err(Error::Command { response, .. }) if response.contains("non-legacy") => {
+                self.dispatch(&format!(
+                    "eval hl.workspace_rule({{ workspace = \"name:{workspace}\", monitor = \"{monitor}\", gaps_in = 0, gaps_out = 0, no_border = true, no_rounding = true }})"
+                ))
+            }
+            other => other,
+        }
+    }
+
+    /// Start `command` through the compositor's shell onto the named
+    /// workspace `workspace`, which takes the focus.
+    pub fn exec_on_workspace(&self, workspace: &str, command: &str) -> Result<()> {
+        match self.dispatch(&format!(
+            "dispatch exec [workspace name:{workspace}] {command}"
+        )) {
+            Err(Error::Command { response, .. }) if response.contains("lua") => {
+                self.dispatch(&format!(
+                    "eval hl.exec_cmd({}, {{ workspace = \"name:{workspace}\" }})",
+                    lua_string(command)
+                ))
+            }
+            other => other,
+        }
+    }
+
+    /// Ask the window at `address` to close, as its close button would.
+    pub fn close_window(&self, address: &str) -> Result<()> {
+        self.dispatcher(
+            &format!("closewindow address:{address}"),
+            &format!("hl.dsp.window.close({{ window = \"address:{address}\" }})"),
+            || true,
+        )
+    }
+
     /// Run a dispatcher. A legacy (hyprlang) config takes `dispatch <name>
     /// <args>`; a Lua config reads `dispatch` as `hl.dispatch(...)`, rejects
     /// that form, and takes the `hl.dsp` call in `lua` instead.
@@ -288,6 +335,39 @@ pub fn clean_mode(width: u32, height: u32, scale: f32) -> (u32, u32) {
     let step = if p.is_multiple_of(2) { p } else { 2 * p };
     let fit = |v: u32| (v - v % step).max(step);
     (fit(width), fit(height))
+}
+
+/// One window, as `clients` lists it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Client {
+    pub address: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub class: String,
+    pub workspace: WorkspaceRef,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WorkspaceRef {
+    pub id: i64,
+    pub name: String,
+}
+
+/// `text` as a Lua string literal.
+fn lua_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for c in text.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 #[derive(Debug, Clone, Deserialize)]

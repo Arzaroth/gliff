@@ -343,6 +343,8 @@ pub fn clean_mode(width: u32, height: u32, scale: f32) -> (u32, u32) {
 pub struct Client {
     pub address: String,
     #[serde(default)]
+    pub pid: i64,
+    #[serde(default)]
     pub title: String,
     #[serde(default)]
     pub class: String,

@@ -22,8 +22,8 @@ pub struct Capture {
 }
 
 impl Capture {
-    pub fn start(prefer_pulse: bool) -> Result<Self> {
-        let (mut child, linker, pulse) = recorder(prefer_pulse)?;
+    pub fn start(prefer_pulse: bool, only: Option<&crate::app::Processes>) -> Result<Self> {
+        let (mut child, linker, pulse) = recorder(prefer_pulse, only)?;
         let mut graph_failure = linker.as_ref().map(|linker| linker.failed.clone());
         let mut stdout = child.stdout.take().context("recorder has no output")?;
         let (tx, packets) = mpsc::channel(QUEUE);
@@ -125,19 +125,28 @@ pub(crate) fn command(program: &str) -> std::process::Command {
 }
 
 /// Start recording as raw 48 kHz f32 stereo on stdout, and the linker that
-/// feeds the recorder when there is one.
-fn recorder(prefer_pulse: bool) -> Result<(Child, Option<Linker>, bool)> {
+/// feeds the recorder when there is one. With `only`, the sound of those
+/// processes alone, which takes the linker and so PipeWire.
+fn recorder(
+    prefer_pulse: bool,
+    only: Option<&crate::app::Processes>,
+) -> Result<(Child, Option<Linker>, bool)> {
     let rate = gliff_audio::SAMPLE_RATE.to_string();
     let channels = gliff_audio::CHANNELS.to_string();
-    if prefer_pulse {
+    if prefer_pulse && only.is_none() {
         return Ok((pulse_recorder(&rate, &channels)?, None, true));
     }
     static CAPTURES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let capture = CAPTURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let name = format!("gliff-audio-{}-{capture}", std::process::id());
-    let linker = Linker::start(&name)
-        .map_err(|e| tracing::warn!(error = %e, "cannot monitor the audio graph; recording the whole output"))
-        .ok();
+    let linker = match (Linker::start(&name, only.cloned()), only) {
+        (Ok(linker), _) => Some(linker),
+        (Err(e), Some(_)) => return Err(e.context("monitor the audio graph for the app's sound")),
+        (Err(e), None) => {
+            tracing::warn!(error = %e, "cannot monitor the audio graph; recording the whole output");
+            None
+        }
+    };
     // With a linker the recorder waits unconnected for the links it makes;
     // without one it records the default output's monitor, which also holds
     // what a local Gliff client plays.
@@ -166,7 +175,7 @@ fn recorder(prefer_pulse: bool) -> Result<(Child, Option<Linker>, bool)> {
     .stdout(std::process::Stdio::piped());
     match Command::from(pw).kill_on_drop(true).spawn() {
         Ok(child) => Ok((child, linker, false)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && only.is_none() => {
             Ok((pulse_recorder(&rate, &channels)?, None, true))
         }
         Err(e) => Err(e).context("start pw-record"),
@@ -198,7 +207,7 @@ fn pulse_recorder(rate: &str, channels: &str) -> Result<Child> {
 const EXCLUDED: &[&str] = &["gliff"];
 
 /// Links every application's output into the recorder, except Gliff's own,
-/// as applications come and go: `pw-dump --monitor` reports the graph and
+/// or only an app's when the session runs one, as applications come and go: `pw-dump --monitor` reports the graph and
 /// `pw-link` adds what is missing. The links end with the recorder.
 struct Linker {
     child: std::process::Child,
@@ -207,7 +216,7 @@ struct Linker {
 }
 
 impl Linker {
-    fn start(capture: &str) -> Result<Self> {
+    fn start(capture: &str, only: Option<crate::app::Processes>) -> Result<Self> {
         let mut child = command("pw-dump")
             .args(["--monitor", "--no-colors"])
             .stderr(std::process::Stdio::inherit())
@@ -246,7 +255,10 @@ impl Linker {
         std::thread::Builder::new()
             .name("gliff-audio-links".into())
             .spawn(move || {
-                let mut links = LinkState::default();
+                let mut links = LinkState {
+                    only,
+                    ..LinkState::default()
+                };
                 loop {
                     if cancelled.load(std::sync::atomic::Ordering::Acquire) {
                         break;
@@ -316,6 +328,7 @@ const LINK_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 struct LinkState {
     graph: std::collections::HashMap<u64, serde_json::Value>,
     attempted: std::collections::HashMap<(u64, u64), std::time::Instant>,
+    only: Option<crate::app::Processes>,
 }
 
 impl LinkState {
@@ -346,7 +359,7 @@ impl LinkState {
     }
 
     fn pending(&mut self, capture: &str, now: std::time::Instant) -> Vec<(u64, u64)> {
-        let wanted = missing_links(&self.graph, capture);
+        let wanted = missing_links(&self.graph, capture, self.only.as_ref());
         self.attempted.retain(|key, _| wanted.contains(key));
         wanted
             .into_iter()
@@ -381,10 +394,11 @@ fn merge_update(current: &mut serde_json::Value, update: serde_json::Value) {
 
 /// The links from application outputs to the recorder `capture` that the
 /// graph (pw-dump objects by id) does not have yet, as (output port, input
-/// port) ids.
+/// port) ids. With `only`, from those processes' outputs alone.
 fn missing_links(
     graph: &std::collections::HashMap<u64, serde_json::Value>,
     capture: &str,
+    only: Option<&crate::app::Processes>,
 ) -> Vec<(u64, u64)> {
     let props = |o: &serde_json::Value| o["info"]["props"].clone();
     let kind = |o: &serde_json::Value, t: &str| o["type"].as_str().is_some_and(|k| k.ends_with(t));
@@ -404,7 +418,10 @@ fn missing_links(
             capture_node = Some(id);
         } else if p["media.class"].as_str() == Some("Stream/Output/Audio") {
             let client = numeric(&p["client.id"]).and_then(|c| graph.get(&c));
-            if !excluded(&p) && !client.is_some_and(|c| excluded(&props(c))) {
+            let pid = numeric(&p["application.process.id"])
+                .or_else(|| client.and_then(|c| numeric(&props(c)["application.process.id"])));
+            let wanted = only.is_none_or(|only| pid.is_some_and(|pid| only.contains(pid)));
+            if wanted && !excluded(&p) && !client.is_some_and(|c| excluded(&props(c))) {
                 sources.insert(id);
             }
         }
@@ -467,6 +484,7 @@ fn missing_links(
 #[derive(Default)]
 pub struct Sound {
     capture: Option<Capture>,
+    only: Option<crate::app::Processes>,
     wanted: bool,
     retry_at: Option<tokio::time::Instant>,
     retry_delay: std::time::Duration,
@@ -474,6 +492,14 @@ pub struct Sound {
 }
 
 impl Sound {
+    /// The sound of these processes alone.
+    pub fn only(processes: crate::app::Processes) -> Self {
+        Self {
+            only: Some(processes),
+            ..Self::default()
+        }
+    }
+
     pub fn set(&mut self, enabled: bool, writer: &crate::writer::Writer) {
         if !enabled {
             self.wanted = false;
@@ -489,7 +515,7 @@ impl Sound {
 
     fn start(&mut self, writer: &crate::writer::Writer) {
         self.retry_at = None;
-        match Capture::start(self.prefer_pulse) {
+        match Capture::start(self.prefer_pulse, self.only.as_ref()) {
             Ok(capture) => {
                 tracing::info!(pulse = capture.pulse, "audio on");
                 self.capture = Some(capture);
@@ -636,10 +662,10 @@ mod tests {
         .into_iter()
         .collect();
         assert_eq!(
-            missing_links(&graph, "gliff-audio-1"),
+            missing_links(&graph, "gliff-audio-1", None),
             vec![(22, 12), (41, 11), (41, 12)]
         );
-        assert!(missing_links(&graph, "gliff-audio-2").is_empty());
+        assert!(missing_links(&graph, "gliff-audio-2", None).is_empty());
     }
 
     #[test]
@@ -875,7 +901,8 @@ mod captured_graph_test {
                 let Some(name) = object["info"]["props"]["node.name"].as_str() else {
                     continue;
                 };
-                if name.starts_with("gliff-audio-") && !missing_links(&state.graph, name).is_empty()
+                if name.starts_with("gliff-audio-")
+                    && !missing_links(&state.graph, name, None).is_empty()
                 {
                     saw_missing_link = true;
                 }

@@ -289,7 +289,10 @@ where
         .features
         .iter()
         .any(|feature| feature == gliff_proto::FEATURE_AUDIO);
-    let mut sound = crate::audio::Sound::default();
+    let mut sound = match &app {
+        Some(app) => crate::audio::Sound::only(app.processes()),
+        None => crate::audio::Sound::default(),
+    };
     let mic_supported = session
         .caps
         .features

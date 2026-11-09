@@ -18,12 +18,46 @@ pub enum Poll {
     Closed,
 }
 
+/// The processes of an app's windows and their descendants, which the
+/// session sends the sound of. The app's poll keeps it current.
+#[derive(Clone, Default)]
+pub struct Processes(std::sync::Arc<std::sync::Mutex<Vec<u64>>>);
+
+impl Processes {
+    fn set(&self, roots: Vec<u64>) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = roots;
+    }
+
+    /// Whether `pid` is one of the roots or descends from one.
+    pub fn contains(&self, pid: u64) -> bool {
+        let roots = self.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let mut pid = pid;
+        for _ in 0..64 {
+            if roots.contains(&pid) {
+                return true;
+            }
+            match parent(pid) {
+                Some(parent) if parent > 1 => pid = parent,
+                _ => return false,
+            }
+        }
+        false
+    }
+}
+
+fn parent(pid: u64) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (_, rest) = stat.rsplit_once(')')?;
+    rest.split_whitespace().nth(1)?.parse().ok()
+}
+
 pub struct App {
     instance: hypr_ipc::Instance,
     workspace: String,
     started: Instant,
     opened: bool,
     title: String,
+    processes: Processes,
 }
 
 impl App {
@@ -42,7 +76,12 @@ impl App {
             started: Instant::now(),
             opened: false,
             title: String::new(),
+            processes: Processes::default(),
         })
+    }
+
+    pub fn processes(&self) -> Processes {
+        self.processes.clone()
     }
 
     fn windows(&self) -> Result<Vec<hypr_ipc::Client>> {
@@ -65,6 +104,12 @@ impl App {
             return Poll::Running;
         };
         self.opened = true;
+        self.processes.set(
+            windows
+                .iter()
+                .filter_map(|w| u64::try_from(w.pid).ok())
+                .collect(),
+        );
         if first.title != self.title {
             self.title = first.title.clone();
             return Poll::Title(self.title.clone());

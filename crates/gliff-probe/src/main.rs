@@ -649,6 +649,9 @@ fn serve_test(node: &std::path::Path, addr: &str, frames: usize, video: VideoMod
         } else {
             Vec::new()
         };
+        // GLIFF_SEND_LOCK=now asks the server to lock its screen;
+        // GLIFF_SEND_LOCK=disconnect asks it to lock when this connection ends.
+        let send_lock = std::env::var("GLIFF_SEND_LOCK").ok().filter(|v| !v.is_empty());
         let recv_file = std::env::var("GLIFF_RECV_CLIP_FILE").ok();
         let recv_dir = std::env::var("GLIFF_RECV_CLIP_DIR").ok().map(PathBuf::from);
         let mut clip_recv: Vec<u8> = Vec::new();
@@ -713,6 +716,14 @@ fn serve_test(node: &std::path::Path, addr: &str, frames: usize, video: VideoMod
                         for keycode in [KEY_Q, KEY_ENTER] {
                             writer.write_msg(&ClientMsg::Key { keycode, pressed: true }).await?;
                             writer.write_msg(&ClientMsg::Key { keycode, pressed: false }).await?;
+                        }
+                    }
+                    if got == 2 {
+                        match send_lock.as_deref() {
+                            Some("now") => writer.write_msg(&ClientMsg::LockScreen).await?,
+                            Some("disconnect") => writer.write_msg(&ClientMsg::LockOnDisconnect { enabled: true }).await?,
+                            Some(other) => bail!("GLIFF_SEND_LOCK={other}: want now or disconnect"),
+                            None => {}
                         }
                     }
                     if got == 3 { writer.write_msg(&ClientMsg::Resize { width: 800, height: 600, scale: 2.0 }).await?; }

@@ -17,6 +17,9 @@
 #  10. a keymap sent mid-session is the one the compositor serves its clients
 #  11. a keymap change mid-session reaches clients behind an input method
 #      (fcitx5), when fcitx5 and foot are installed
+#  12. focus changes do not stack shortcut-inhibit handlers
+#  13. the remote's screen locks when asked, and when a connection that
+#      asked for it ends (through a stand-in loginctl)
 #
 # Exits non-zero on the first failure.
 set -uo pipefail
@@ -372,5 +375,36 @@ inhibits=$(grep -c "compositor shortcut inhibit" "$ilog")
     || fail "$inhibits shortcut-inhibit notifications for $focused focus changes"
 rm -rf "$ixdg" "$txdg" "$ilog"
 echo "   shortcut inhibit PASS"
+
+echo "== 13. screen lock, now and on disconnect =="
+# A stand-in loginctl records what the server asks of logind, so the test
+# locks nothing: show-user names session 7, lock-session is logged.
+lockdir=$(mktemp -d); lockcalls="$lockdir/calls"; touch "$lockcalls"
+cat >"$lockdir/loginctl" <<LOGINCTL
+#!/bin/sh
+echo "\$*" >>"$lockcalls"
+[ "\$1" = show-user ] && echo 7
+exit 0
+LOGINCTL
+chmod +x "$lockdir/loginctl"
+locks() { grep -c "^lock-session 7$" "$lockcalls"; }
+run_lock_case() {
+    local send=$1
+    PATH="$lockdir:$PATH" "$SERVER" --listen 127.0.0.1:9051 --headless --instance "$NEST_SIG" >/tmp/gliff-e2e-lock-server.log 2>&1 &
+    local sp=$!; PIDS+=("$sp"); sleep 2
+    damage & local dp=$!; PIDS+=("$dp")
+    GLIFF_SEND_LOCK=$send timeout 20 $PROBE --video "$CLIENT_VIDEO" serve-test --connect 127.0.0.1:9051 --frames 8 >/tmp/gliff-e2e-lock-client.log 2>&1 \
+        || fail "lock client ($send): $(tail -2 /tmp/gliff-e2e-lock-client.log | tr '\n' ' ')"
+    for _ in $(seq 1 30); do kill -0 "$sp" 2>/dev/null || break; sleep 0.2; done
+    kill "$dp" "$sp" 2>/dev/null; sleep 1
+}
+run_lock_case now
+[ "$(locks)" = 1 ] || fail "LockScreen did not lock the session ($(tr '\n' ';' <"$lockcalls"))"
+run_lock_case ""
+[ "$(locks)" = 1 ] || fail "a connection that did not ask locked the screen ($(tr '\n' ';' <"$lockcalls"))"
+run_lock_case disconnect
+[ "$(locks)" = 2 ] || fail "LockOnDisconnect did not lock when the connection ended ($(tr '\n' ';' <"$lockcalls"))"
+rm -rf "$lockdir"
+echo "   screen lock PASS"
 
 echo "E2E PASS: all checks passed"

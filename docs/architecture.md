@@ -328,6 +328,16 @@ Every crate with `unsafe` documents the safety requirements at each block.
   from a keyframe. The client keeps the preset per machine and sends it
   on each connection.
 
+- **Actual size.** Client-side: the picture sits in a `ScrolledWindow`
+  that never scrolls when fitted. At actual size the picture gets the
+  mirrored screen's size from `Outputs` (divided by the device scale) as
+  its size request and the scroller shows scrollbars; the resize handler
+  then reports the larger picture, so `fit_mirror` stops scaling the
+  stream down, and the paintable lands on a factor of exactly 1. Pointer
+  mapping already works in picture coordinates, so it needs nothing. A
+  timer scrolls while the pointer rests within 32 px of a viewport edge
+  and resends the pointer, since the content moves under it.
+
 - **Privacy mode.** A server that listed the `privacy` feature answers
   `ClientMsg::Privacy` with `ServerMsg::Privacy` carrying the outcome. On a
   headless session it opens a Wayland connection of its own and gives

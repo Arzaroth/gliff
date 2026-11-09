@@ -120,6 +120,9 @@ without moving the pointer. `--release-hotkey` changes that key (`ctrl+alt+q`,
 - *View only* stops sending your keyboard and pointer, to watch without
   touching anything. The window then leaves the keyboard alone, so your
   own shortcuts keep working with the pointer over the picture.
+- *Actual size* shows a mirrored screen pixel for pixel instead of fitted
+  to the window; the picture scrolls when the pointer rests near an edge
+  of the window. A private screen is always at actual size.
 - *Quality* picks what the stream gives up first when the link is short:
   *Automatic* (frame rate, then colour detail, then resolution), *Sharp
   text* (never resolution), *Smooth motion* (frame rate last) or *Low

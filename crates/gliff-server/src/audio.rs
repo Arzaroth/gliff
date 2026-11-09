@@ -1016,6 +1016,96 @@ mod pulse_fallback_test {
             sound.set(false, &writer);
         });
     }
+
+    /// The streams linked into a recorder, as `node:port` of their outputs.
+    fn recorded_streams() -> Vec<String> {
+        let out = command("pw-link")
+            .arg("-l")
+            .stdout(std::process::Stdio::piped())
+            .output()
+            .unwrap();
+        let mut linked = Vec::new();
+        let mut port = String::new();
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            match line.trim_start().strip_prefix("|-> ") {
+                Some(input) if input.starts_with("gliff-audio-") => linked.push(port.clone()),
+                Some(_) => {}
+                None if !line.starts_with(' ') => port = line.trim().to_string(),
+                None => {}
+            }
+        }
+        linked
+    }
+
+    #[test]
+    #[ignore = "needs a private PipeWire daemon and GLIFF_AUDIO_TEST_PCM"]
+    fn an_app_session_records_only_the_apps_streams() {
+        assert_eq!(std::env::var("GLIFF_ISOLATED_PIPEWIRE").as_deref(), Ok("1"));
+        let file = std::env::var("GLIFF_AUDIO_TEST_PCM").unwrap();
+        struct Playback(std::process::Child);
+        impl Drop for Playback {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let play = |name: &str| {
+            Playback(
+                command("pw-cat")
+                    .args([
+                        "--playback",
+                        "--raw",
+                        "--rate",
+                        "48000",
+                        "--channels",
+                        "2",
+                        "--format",
+                        "f32",
+                        "--target",
+                        "0",
+                        "--latency",
+                        "10ms",
+                        "-P",
+                    ])
+                    .arg(format!(
+                        "{{ node.name={name} node.always-process=true node.group=pipewire.dummy }}"
+                    ))
+                    .arg(&file)
+                    .spawn()
+                    .unwrap(),
+            )
+        };
+        let app = play("gliff-test-app");
+        let _other = play("gliff-test-other");
+        let processes = crate::app::Processes::default();
+        processes.set(vec![u64::from(app.0.id())]);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tokio::task::LocalSet::new().block_on(&runtime, async {
+            let _capture = Capture::start(false, Some(&processes)).unwrap();
+            for _ in 0..50 {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                if recorded_streams()
+                    .iter()
+                    .any(|p| p.starts_with("gliff-test-app:"))
+                {
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            let linked = recorded_streams();
+            assert!(
+                linked.iter().any(|p| p.starts_with("gliff-test-app:")),
+                "the app's stream is not recorded: {linked:?}"
+            );
+            assert!(
+                !linked.iter().any(|p| p.starts_with("gliff-test-other:")),
+                "a stream outside the app is recorded: {linked:?}"
+            );
+        });
+    }
 }
 
 #[cfg(test)]

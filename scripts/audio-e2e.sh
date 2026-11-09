@@ -39,6 +39,7 @@ with open(os.environ['GLIFF_AUDIO_TEST_PCM'], 'wb') as output:
     samples.tofile(output)
 PY
 cargo test --locked -p gliff-server raw_capture_relinks_and_recovers_from_graph_monitor_failure -- --ignored --nocapture
+cargo test --locked -p gliff-server an_app_session_records_only_the_apps_streams -- --ignored --nocapture
 mkdir "$run_dir/mock"
 cat > "$run_dir/mock/pw-record" <<'EOF'
 #!/bin/sh
@@ -61,4 +62,4 @@ EOF
 chmod +x "$run_dir/mock/pw-record" "$run_dir/mock/parec"
 PATH="$run_dir/mock:$PATH" GLIFF_AUDIO_MOCK_BACKEND=1 \
     cargo test --locked -p gliff-server an_installed_but_failing_pw_record_recovers_with_parec -- --ignored --nocapture
-echo 'AUDIO E2E PASS: raw capture, relinking, graph recovery and monitor fallback'
+echo 'AUDIO E2E PASS: raw capture, relinking, graph recovery, monitor fallback and an app session'

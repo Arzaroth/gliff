@@ -333,11 +333,18 @@ Every crate with `unsafe` documents the safety requirements at each block.
   headless session it opens a Wayland connection of its own and gives
   every other output a `zwlr_layer_surface_v1` on the overlay layer,
   anchored to all edges, exclusive zone -1, no keyboard interactivity,
-  showing one zero-filled XRGB buffer. The surfaces need no event loop
-  after their first configure, and the compositor removes them when the
-  connection closes, so a dying server cannot leave screens covered. A
-  mirrored session refuses: covering the screen it shows would only send
-  black.
+  showing one zero-filled XRGB buffer. A thread keeps serving that
+  connection: an output that appears gets a cover once it has a name, one
+  that goes drops its own. The compositor removes the surfaces when the
+  connection closes, so a dying server cannot leave screens covered. The
+  server also turns every physical input device off through hyprctl
+  (`device[name]:enabled`, or `hl.device` on a Lua config); the virtual
+  keyboard and pointer that carry the session's input, and an input
+  method's, stay on. Devices do not go away with a connection, so a guard
+  started with privacy mode, the server binary run with a hidden
+  `--restore-input-after PID` and in a process group of its own, waits for
+  the server to end and turns them back on if it died first. A mirrored
+  session refuses: covering the screen it shows would only send black.
 
 - **Screen lock.** A server that listed the `lock` feature reads the user's
   graphical session from logind (`loginctl show-user <uid> -p Display`)

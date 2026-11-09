@@ -343,8 +343,9 @@ Every crate with `unsafe` documents the safety requirements at each block.
   `gliff-app-<pid>` to its headless output with no gaps, border or
   rounding (`Instance::bare_workspace_on`) and starts the command onto it
   through the compositor's shell (`exec_on_workspace`) with a
-  `fullscreen` rule, so the app's first window covers the screen and the
-  bar the remote's shell starts on every output, and its popups render
+  `fullscreen` and an `opaque` rule, so the app's first window covers the
+  screen and the bar the remote's shell starts on every output, even with
+  a translucent background, and its popups render
   inside it. Every 500 ms it lists the windows on that workspace: their
   processes become the session's sound filter, so the audio linker links
   only streams whose `application.process.id` (on the node or its client)

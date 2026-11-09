@@ -112,7 +112,7 @@ no machines yet, it opens with the address bar ready.
 **Remote apps.** `gliff --app firefox user@host` runs one app on the
 remote machine and shows only it, in a window of its own that takes the
 app's title: the app gets a private screen the size of the window and
-opens fullscreen on it, so menus and dialogs show inside it as usual. You
+opens fullscreen and opaque on it, so menus and dialogs show inside it as usual. You
 hear the app's own sound only, which needs PipeWire on the remote machine;
 it still plays there too. Resizing
 the window resizes the app. Closing the window closes the app as its close

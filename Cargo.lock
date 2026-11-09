@@ -879,6 +879,7 @@ version = "0.4.2"
 dependencies = [
  "anyhow",
  "bytes",
+ "calloop",
  "clap",
  "dbus",
  "drm-fourcc",

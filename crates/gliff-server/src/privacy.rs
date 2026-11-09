@@ -1,15 +1,17 @@
 //! Privacy mode: every output but the session's own private screen is
 //! covered by a black layer-shell surface above everything, which also
-//! takes the pointer there. The surfaces belong to a Wayland connection of
-//! their own, so they go away with it: on drop, and if the server dies.
+//! takes the pointer there. A screen plugged in while privacy mode is on is
+//! covered as it appears. The surfaces belong to a Wayland connection of
+//! their own, served by a thread, so they go away with it: on drop, and if
+//! the server dies.
 
 use anyhow::{Context, Result};
 use wayland_client::globals::GlobalListContents;
 use wayland_client::protocol::{
-    wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_output, wl_output::WlOutput,
+    wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_output, wl_output::WlOutput, wl_registry,
     wl_registry::WlRegistry, wl_shm, wl_shm::WlShm, wl_shm_pool::WlShmPool, wl_surface::WlSurface,
 };
-use wayland_client::{delegate_noop, Connection, Dispatch, QueueHandle};
+use wayland_client::{delegate_noop, Connection, Dispatch, Proxy, QueueHandle};
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::{
     Layer, ZwlrLayerShellV1,
 };
@@ -17,86 +19,207 @@ use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::{
     self, Anchor, KeyboardInteractivity, ZwlrLayerSurfaceV1,
 };
 
-/// The covers, kept alive with their connection.
+/// The covers, kept up by their thread until drop.
 pub struct Privacy {
-    _conn: Connection,
-    covers: Vec<(WlSurface, ZwlrLayerSurfaceV1, Option<WlBuffer>)>,
+    stop: Option<calloop::channel::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for Privacy {
     fn drop(&mut self) {
-        for (surface, layer, buffer) in self.covers.drain(..) {
-            layer.destroy();
-            surface.destroy();
-            if let Some(buffer) = buffer {
-                buffer.destroy();
-            }
+        drop(self.stop.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
         }
-        let _ = self._conn.flush();
     }
 }
 
-#[derive(Default)]
+struct Screen {
+    global: u32,
+    output: WlOutput,
+    name: String,
+    cover: Option<Cover>,
+}
+
+struct Cover {
+    surface: WlSurface,
+    layer: ZwlrLayerSurfaceV1,
+    buffer: Option<WlBuffer>,
+}
+
+impl Cover {
+    fn destroy(self) {
+        self.layer.destroy();
+        self.surface.destroy();
+        if let Some(buffer) = self.buffer {
+            buffer.destroy();
+        }
+    }
+}
+
 struct State {
-    outputs: hypr_wl::Outputs,
-    /// Configures received, as (cover index, serial, width, height).
-    configures: Vec<(usize, u32, u32, u32)>,
+    conn: Connection,
+    keep: String,
+    compositor: WlCompositor,
+    shm: WlShm,
+    layer_shell: ZwlrLayerShellV1,
+    screens: Vec<Screen>,
+    stopped: bool,
 }
 
 impl Privacy {
-    /// Cover every output except `keep`.
+    /// Cover every output except `keep`, now and as outputs appear.
     pub fn start(target: &hypr_wl::Target, keep: &str) -> Result<Self> {
         let (conn, globals, mut queue) = hypr_wl::init::<State>(target)?;
         let qh = queue.handle();
-        let compositor: WlCompositor = globals.bind(&qh, 4..=6, ()).context("no wl_compositor")?;
-        let shm: WlShm = globals.bind(&qh, 1..=1, ()).context("no wl_shm")?;
-        let layer_shell: ZwlrLayerShellV1 = globals
-            .bind(&qh, 1..=4, ())
-            .context("the compositor has no layer shell")?;
         let mut state = State {
-            outputs: hypr_wl::Outputs::bind(&globals, &qh)?,
-            ..State::default()
+            conn: conn.clone(),
+            keep: keep.to_string(),
+            compositor: globals.bind(&qh, 4..=6, ()).context("no wl_compositor")?,
+            shm: globals.bind(&qh, 1..=1, ()).context("no wl_shm")?,
+            layer_shell: globals
+                .bind(&qh, 1..=4, ())
+                .context("the compositor has no layer shell")?,
+            screens: Vec::new(),
+            stopped: false,
         };
-        queue.roundtrip(&mut state)?;
-        let mut covers = Vec::new();
-        for (output, info) in &state.outputs.list {
-            if info.name == keep || info.name.is_empty() {
-                continue;
-            }
-            let surface = compositor.create_surface(&qh, ());
-            let layer = layer_shell.get_layer_surface(
-                &surface,
-                Some(output),
-                Layer::Overlay,
-                "gliff-privacy".into(),
-                &qh,
-                covers.len(),
-            );
-            layer.set_anchor(Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right);
-            layer.set_exclusive_zone(-1);
-            layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-            surface.commit();
-            tracing::debug!(output = %info.name, "covering output");
-            covers.push((surface, layer, None));
+        let outputs: Vec<(u32, u32)> = globals.contents().with_list(|list| {
+            list.iter()
+                .filter(|g| g.interface == WlOutput::interface().name)
+                .map(|g| (g.name, g.version))
+                .collect()
+        });
+        for (global, version) in outputs {
+            state.add_screen(globals.registry(), global, version, &qh);
         }
-        queue.roundtrip(&mut state)?;
-        for (index, serial, width, height) in std::mem::take(&mut state.configures) {
-            let Some((surface, layer, buffer)) = covers.get_mut(index) else {
-                continue;
-            };
-            layer.ack_configure(serial);
-            let black = black_buffer(&shm, &qh, width.max(1), height.max(1))?;
-            surface.attach(Some(&black), 0, 0);
-            surface.damage_buffer(0, 0, width as i32, height as i32);
-            surface.commit();
-            *buffer = Some(black);
+        for _ in 0..3 {
+            queue.roundtrip(&mut state)?;
         }
-        queue.roundtrip(&mut state)?;
-        tracing::info!(covered = covers.len(), "privacy mode on");
+        let covered = state.screens.iter().filter(|s| s.cover.is_some()).count();
+        tracing::info!(covered, "privacy mode on");
+        let (stop, commands) = calloop::channel::channel();
+        let thread = std::thread::Builder::new()
+            .name("gliff-privacy".into())
+            .spawn(move || {
+                if let Err(e) = hypr_wl::run_loop(conn, queue, commands, &mut state) {
+                    tracing::warn!(error = %e, "privacy covers lost the compositor");
+                }
+            })?;
         Ok(Self {
-            _conn: conn,
-            covers,
+            stop: Some(stop),
+            thread: Some(thread),
         })
+    }
+}
+
+impl State {
+    fn add_screen(
+        &mut self,
+        registry: &WlRegistry,
+        global: u32,
+        version: u32,
+        qh: &QueueHandle<Self>,
+    ) {
+        let output: WlOutput = registry.bind(global, version.min(4), qh, ());
+        self.screens.push(Screen {
+            global,
+            output,
+            name: String::new(),
+            cover: None,
+        });
+    }
+
+    fn remove_screen(&mut self, global: u32) {
+        if let Some(at) = self.screens.iter().position(|s| s.global == global) {
+            let screen = self.screens.remove(at);
+            if let Some(cover) = screen.cover {
+                cover.destroy();
+            }
+            screen.output.release();
+        }
+    }
+
+    fn cover(&mut self, global: u32, qh: &QueueHandle<Self>) {
+        let Some(screen) = self.screens.iter_mut().find(|s| s.global == global) else {
+            return;
+        };
+        if screen.cover.is_some() || screen.name.is_empty() || screen.name == self.keep {
+            return;
+        }
+        let surface = self.compositor.create_surface(qh, ());
+        let layer = self.layer_shell.get_layer_surface(
+            &surface,
+            Some(&screen.output),
+            Layer::Overlay,
+            "gliff-privacy".into(),
+            qh,
+            global,
+        );
+        layer.set_anchor(Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right);
+        layer.set_exclusive_zone(-1);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        surface.commit();
+        tracing::debug!(output = %screen.name, "covering output");
+        screen.cover = Some(Cover {
+            surface,
+            layer,
+            buffer: None,
+        });
+    }
+
+    fn configure(
+        &mut self,
+        global: u32,
+        serial: u32,
+        width: u32,
+        height: u32,
+        qh: &QueueHandle<Self>,
+    ) {
+        let Some(cover) = self
+            .screens
+            .iter_mut()
+            .find(|s| s.global == global)
+            .and_then(|s| s.cover.as_mut())
+        else {
+            return;
+        };
+        cover.layer.ack_configure(serial);
+        let (width, height) = (width.max(1), height.max(1));
+        let black = match black_buffer(&self.shm, qh, width, height) {
+            Ok(black) => black,
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot draw a privacy cover");
+                return;
+            }
+        };
+        cover.surface.attach(Some(&black), 0, 0);
+        cover
+            .surface
+            .damage_buffer(0, 0, width as i32, height as i32);
+        cover.surface.commit();
+        if let Some(old) = cover.buffer.replace(black) {
+            old.destroy();
+        }
+    }
+}
+
+impl hypr_wl::LoopState for State {
+    type Cmd = ();
+
+    fn on_cmd(&mut self, _: ()) {}
+
+    fn stop(&mut self) {
+        for screen in &mut self.screens {
+            if let Some(cover) = screen.cover.take() {
+                cover.destroy();
+            }
+        }
+        let _ = self.conn.flush();
+        self.stopped = true;
+    }
+
+    fn stop_requested(&self) -> bool {
+        self.stopped
     }
 }
 
@@ -122,13 +245,24 @@ fn black_buffer(shm: &WlShm, qh: &QueueHandle<State>, width: u32, height: u32) -
 
 impl Dispatch<WlRegistry, GlobalListContents> for State {
     fn event(
-        _: &mut Self,
-        _: &WlRegistry,
-        _: <WlRegistry as wayland_client::Proxy>::Event,
+        state: &mut Self,
+        registry: &WlRegistry,
+        event: wl_registry::Event,
         _: &GlobalListContents,
         _: &Connection,
-        _: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
     ) {
+        match event {
+            wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } if interface == WlOutput::interface().name => {
+                state.add_screen(registry, name, version, qh);
+            }
+            wl_registry::Event::GlobalRemove { name } => state.remove_screen(name),
+            _ => {}
+        }
     }
 }
 
@@ -139,28 +273,48 @@ impl Dispatch<WlOutput, ()> for State {
         event: wl_output::Event,
         _: &(),
         _: &Connection,
-        _: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
     ) {
-        state.outputs.handle(output, event);
+        let Some(screen) = state.screens.iter_mut().find(|s| &s.output == output) else {
+            return;
+        };
+        match event {
+            wl_output::Event::Name { name } => screen.name = name,
+            wl_output::Event::Done => {
+                let global = screen.global;
+                state.cover(global, qh);
+            }
+            _ => {}
+        }
     }
 }
 
-impl Dispatch<ZwlrLayerSurfaceV1, usize> for State {
+impl Dispatch<ZwlrLayerSurfaceV1, u32> for State {
     fn event(
         state: &mut Self,
         _: &ZwlrLayerSurfaceV1,
         event: zwlr_layer_surface_v1::Event,
-        index: &usize,
+        global: &u32,
         _: &Connection,
-        _: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
     ) {
-        if let zwlr_layer_surface_v1::Event::Configure {
-            serial,
-            width,
-            height,
-        } = event
-        {
-            state.configures.push((*index, serial, width, height));
+        match event {
+            zwlr_layer_surface_v1::Event::Configure {
+                serial,
+                width,
+                height,
+            } => state.configure(*global, serial, width, height, qh),
+            zwlr_layer_surface_v1::Event::Closed => {
+                if let Some(cover) = state
+                    .screens
+                    .iter_mut()
+                    .find(|s| s.global == *global)
+                    .and_then(|s| s.cover.take())
+                {
+                    cover.destroy();
+                }
+            }
+            _ => {}
         }
     }
 }

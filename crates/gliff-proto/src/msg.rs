@@ -68,6 +68,10 @@ pub const FEATURE_QUALITY: &str = "quality";
 /// `ServerMsg::Privacy`.
 pub const FEATURE_PRIVACY: &str = "privacy";
 
+/// A session that runs one app on its private screen: the server sends
+/// `AppTitle` as the app's title changes and `AppClosed` when it is gone.
+pub const FEATURE_APP: &str = "app";
+
 pub fn features() -> Vec<String> {
     FEATURES.iter().map(|f| f.to_string()).collect()
 }
@@ -640,6 +644,16 @@ pub enum ServerMsg {
         #[n(0)]
         enabled: bool,
     },
+    /// The title of the app this session runs. Sent only to a client that
+    /// listed [`FEATURE_APP`].
+    #[n(17)]
+    AppTitle {
+        #[n(0)]
+        title: String,
+    },
+    /// The app this session runs closed its last window; the session ends.
+    #[n(18)]
+    AppClosed,
 }
 
 impl ServerMsg {

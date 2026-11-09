@@ -67,7 +67,8 @@ impl Queue {
             | ServerMsg::Pong { .. }
             | ServerMsg::Ping { .. }
             | ServerMsg::Outputs { .. }
-            | ServerMsg::Privacy { .. } => {
+            | ServerMsg::Privacy { .. }
+            | ServerMsg::AppTitle { .. } => {
                 self.packets.retain(|(queued, _)| {
                     std::mem::discriminant(queued) != std::mem::discriminant(&msg)
                 });
@@ -78,7 +79,8 @@ impl Queue {
             | ServerMsg::ClipboardRequest { .. }
             | ServerMsg::ClipboardData { .. }
             | ServerMsg::ClipboardAck { .. }
-            | ServerMsg::ClipboardAbort { .. } => {}
+            | ServerMsg::ClipboardAbort { .. }
+            | ServerMsg::AppClosed => {}
             // Sound normally overtakes a waiting video frame, preserving
             // audio order. Pending Pings/Pongs limit that priority so they
             // cannot starve; cursor and clipboard updates are not barriers.

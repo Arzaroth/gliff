@@ -221,6 +221,53 @@ impl Instance {
             other => other,
         }
     }
+
+    /// The names of every keyboard, pointer, tablet and touch device.
+    pub fn input_devices(&self) -> Result<Vec<String>> {
+        let devices: Devices = self.request_json("devices")?;
+        let mut names: Vec<String> = [
+            devices.keyboards,
+            devices.mice,
+            devices.tablets,
+            devices.touch,
+        ]
+        .into_iter()
+        .flatten()
+        .map(|d| d.name)
+        .collect();
+        names.sort();
+        names.dedup();
+        Ok(names)
+    }
+
+    /// Let the input device `name` reach the compositor or not.
+    pub fn set_device_enabled(&self, name: &str, enabled: bool) -> Result<()> {
+        let keyword = format!("keyword device[{name}]:enabled {}", u8::from(enabled));
+        match self.dispatch(&keyword) {
+            Err(Error::Command { response, .. }) if response.contains("non-legacy") => self
+                .dispatch(&format!(
+                    "eval hl.device({{ name = {name:?}, enabled = {enabled} }})"
+                )),
+            other => other,
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct Devices {
+    #[serde(default)]
+    keyboards: Vec<Device>,
+    #[serde(default)]
+    mice: Vec<Device>,
+    #[serde(default)]
+    tablets: Vec<Device>,
+    #[serde(default)]
+    touch: Vec<Device>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Device {
+    name: String,
 }
 
 /// Round a mode down until `scale` divides it into whole logical pixels.
@@ -406,6 +453,49 @@ mod tests {
         });
         assert!(result.is_ok());
         assert_eq!(commands, ["dispatch dpms on gliff-7"]);
+    }
+
+    #[test]
+    fn input_devices_lists_every_kind_once() {
+        let mut names = Vec::new();
+        let (result, commands) = against_socket(
+            &[
+                r#"{"mice": [{"name": "touchpad"}, {"name": "unknown-device"}],
+                 "keyboards": [{"name": "at-keyboard"}, {"name": "touchpad"}],
+                 "tablets": [], "switches": [{"name": "Lid Switch"}]}"#,
+            ],
+            |i| {
+                names = i.input_devices()?;
+                Ok(())
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(commands, ["j/devices"]);
+        assert_eq!(names, ["at-keyboard", "touchpad", "unknown-device"]);
+    }
+
+    #[test]
+    fn set_device_enabled_falls_back_to_lua() {
+        let (result, commands) =
+            against_socket(&["ok"], |i| i.set_device_enabled("at-keyboard", false));
+        assert!(result.is_ok());
+        assert_eq!(commands, ["keyword device[at-keyboard]:enabled 0"]);
+
+        let (result, commands) = against_socket(
+            &[
+                "keyword can't work with non-legacy parsers. Use eval.",
+                "ok",
+            ],
+            |i| i.set_device_enabled("at-keyboard", true),
+        );
+        assert!(result.is_ok());
+        assert_eq!(
+            commands,
+            [
+                "keyword device[at-keyboard]:enabled 1",
+                r#"eval hl.device({ name = "at-keyboard", enabled = true })"#,
+            ]
+        );
     }
 
     #[test]

@@ -14,7 +14,7 @@ use bytes::Bytes;
 use gliff_proto::clipboard::CHUNK;
 use gliff_proto::{
     features, is_incompatible, version_mismatch, ChromaMode, ClientCaps, ClientMsg, ClipboardFile,
-    ClipboardMsg, Codec, ServerMsg, VideoPipeline, PROTOCOL_VERSION,
+    ClipboardMsg, Codec, ServerMsg, VideoPipeline, FEATURE_PRIVACY, PROTOCOL_VERSION,
 };
 use gliff_sw::VideoMode;
 use gliff_transport::clipboard::progress::Progress;
@@ -72,6 +72,9 @@ pub enum Status {
         /// The server serves a dedicated headless output whose frames carry
         /// the compositor-drawn cursor.
         headless: bool,
+        /// The server can cover its other screens: a private screen on a
+        /// server with privacy mode.
+        coverable: bool,
     },
     Stats {
         fps: f32,
@@ -108,6 +111,8 @@ pub enum Status {
     /// The two ends speak different protocol versions, so retrying cannot
     /// help.
     Incompatible(String),
+    /// Privacy mode is on or off on the server.
+    Privacy(bool),
     Closed,
 }
 
@@ -486,6 +491,7 @@ where
     // estimate is seeded ahead of the first frame ack.
     let mut got_ack = false;
     let mut headless = false;
+    let mut server_privacy = false;
     let (mut cfg, pipeline) = loop {
         match reader.read_msg::<ServerMsg>().await? {
             ServerMsg::HelloAck {
@@ -501,6 +507,7 @@ where
                 }
                 tracing::debug!(?features, "server features");
                 headless = session.headless;
+                server_privacy = features.iter().any(|f| f == FEATURE_PRIVACY);
                 got_ack = true;
             }
             ServerMsg::Ping { t } => writer.write_msg(&ClientMsg::Pong { t }).await?,
@@ -541,6 +548,7 @@ where
         view_height: cfg.view.1,
         fps_cap: cfg.fps_cap,
         headless,
+        coverable: server_privacy && headless,
     });
     let decode_on = match (&decoder, &gpu) {
         (VideoDecoder::Gpu(_), Some(g)) => g.name.as_str(),
@@ -876,6 +884,7 @@ where
                     view_height,
                     fps_cap,
                     headless,
+                    coverable: server_privacy && headless,
                 });
             }
             ServerMsg::CursorShape {
@@ -900,6 +909,9 @@ where
                 anyhow::bail!("server error {code}: {message}")
             }
             ServerMsg::HelloAck { .. } => {}
+            ServerMsg::Privacy { enabled } => {
+                let _ = status.send(Status::Privacy(enabled));
+            }
             other => {
                 if let Ok(clip) = other.into_clipboard() {
                     let payload = match &clip {

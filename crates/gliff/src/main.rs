@@ -123,6 +123,9 @@ struct App {
     /// Size of the video widget in device pixels, rounded down to even.
     view_size: Cell<(u32, u32)>,
     view_scale: Cell<f64>,
+    /// The session menu, hidden until something adds an entry to it.
+    session_btn: gtk::MenuButton,
+    session_list: gtk::Box,
     /// Evdev codes currently held on the remote, so they can all be released
     /// when the keyboard is handed back to the local compositor.
     pressed_keys: RefCell<BTreeSet<u32>>,
@@ -162,6 +165,10 @@ struct Session {
     /// The server streams a dedicated headless output: its frames carry the
     /// compositor-drawn cursor, so the local pointer is hidden over the video.
     headless: Cell<bool>,
+    /// The server can cover its other screens.
+    coverable: Cell<bool>,
+    /// Privacy mode is on, as the server last reported.
+    privacy_on: Cell<bool>,
     /// Size of the stream the server is sending, from the last decoded frame.
     stream_size: Cell<(u32, u32)>,
     /// The full-quality fit size the stream is drawn into; equals the stream
@@ -206,6 +213,8 @@ impl Session {
             remembered: Cell::new(false),
             connected: Cell::new(false),
             headless: Cell::new(false),
+            coverable: Cell::new(false),
+            privacy_on: Cell::new(false),
             stream_size: Cell::new((0, 0)),
             stream_view: Cell::new((0, 0)),
             server_view: Cell::new((0, 0)),
@@ -323,6 +332,16 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
         .icon_name("utilities-system-monitor-symbolic")
         .tooltip_text("Show stats")
         .build();
+    let session_list = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(2)
+        .build();
+    let session_btn = gtk::MenuButton::builder()
+        .icon_name("view-more-symbolic")
+        .tooltip_text("Session")
+        .popover(&gtk::Popover::builder().child(&session_list).build())
+        .visible(false)
+        .build();
     let tabs = gtk::Box::builder().spacing(6).build();
     let tabs_scroller = gtk::ScrolledWindow::builder()
         .child(&tabs)
@@ -335,6 +354,7 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
     header.pack_start(&add_revealer);
     header.pack_end(&fullscreen_btn);
     header.pack_end(&stats_btn);
+    header.pack_end(&session_btn);
 
     let stats = gtk::Label::builder()
         .halign(gtk::Align::Start)
@@ -417,6 +437,8 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
         local_clipboard: RefCell::new(None),
         view_size: Cell::new((0, 0)),
         view_scale: Cell::new(1.0),
+        session_btn: session_btn.clone(),
+        session_list,
         pressed_keys: RefCell::new(BTreeSet::new()),
         released: Cell::new(false),
         config_path: Config::default_path(),
@@ -430,6 +452,7 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
     });
     install_input_handlers(&ui, &video, &window, hotkey);
     install_resize_handler(&ui);
+    install_privacy_entry(&ui);
     install_address_bar(&ui, &connect_btn);
     refresh_tabs(&ui);
 
@@ -1111,6 +1134,7 @@ fn show_disconnected(ui: &Rc<App>, s: &Rc<Session>) {
     s.stream_view.set((0, 0));
     s.server_view.set((0, 0));
     s.cursor.borrow_mut().take();
+    s.privacy_on.set(false);
     ui.transfers.clear_connection(s.conn.get());
     set_stats(ui, s, "");
     if is_active(ui, s) {
@@ -1328,7 +1352,9 @@ fn poll_status(ui: Rc<App>, s: Rc<Session>, rx: Receiver<Status>, generation: u6
                     view_height,
                     fps_cap,
                     headless,
+                    coverable,
                 } => {
+                    s.coverable.set(coverable);
                     s.server_view.set((view_width, view_height));
                     s.fps_cap.set(fps_cap);
                     s.headless.set(headless);
@@ -1447,6 +1473,19 @@ fn poll_status(ui: Rc<App>, s: Rc<Session>, rx: Receiver<Status>, generation: u6
                     show_disconnected(&ui, &s);
                     s.gave_up.set(true);
                     return glib::ControlFlow::Break;
+                }
+                Status::Privacy(enabled) => {
+                    let asked = s.privacy_on.replace(enabled);
+                    if is_active(&ui, &s) {
+                        show_hint(
+                            &ui,
+                            match (enabled, asked) {
+                                (true, _) => "Privacy mode: the remote's other screens are covered",
+                                (false, true) => "Privacy mode is not available here",
+                                (false, false) => "Privacy mode is off",
+                            },
+                        );
+                    }
                 }
                 Status::Closed => {
                     show_disconnected(&ui, &s);
@@ -2234,6 +2273,58 @@ fn device_scale(ui: &App) -> f64 {
     ui.window
         .surface()
         .map_or(ui.video.scale_factor() as f64, |s| s.scale())
+}
+
+/// Privacy mode, for a session on a private screen: covers the remote's
+/// other screens and turns its own input off while on.
+fn install_privacy_entry(ui: &Rc<App>) {
+    let privacy = gtk::CheckButton::with_label("Privacy mode");
+    privacy.set_tooltip_text(Some(
+        "Black out the remote's other screens and its own keyboard and mouse while you use a private screen",
+    ));
+    let syncing = Rc::new(Cell::new(false));
+    {
+        let weak = Rc::downgrade(ui);
+        let syncing = syncing.clone();
+        privacy.connect_toggled(move |check| {
+            if syncing.get() {
+                return;
+            }
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            if let Some(s) = active(&ui).filter(|s| s.coverable.get()) {
+                s.privacy_on.set(check.is_active());
+                send_to(
+                    &s,
+                    ClientMsg::Privacy {
+                        enabled: check.is_active(),
+                    },
+                );
+            }
+        });
+    }
+    add_session_entry(ui, &privacy);
+    let weak = Rc::downgrade(ui);
+    ui.session_btn
+        .popover()
+        .expect("the session menu has a popover")
+        .connect_show(move |_| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let coverable = active(&ui).filter(|s| s.connected.get() && s.coverable.get());
+            syncing.set(true);
+            privacy.set_sensitive(coverable.is_some());
+            privacy.set_active(coverable.is_some_and(|s| s.privacy_on.get()));
+            syncing.set(false);
+        });
+}
+
+/// Add an entry to the session menu, which shows from its first entry on.
+fn add_session_entry(ui: &App, entry: &impl IsA<gtk::Widget>) {
+    ui.session_list.append(entry);
+    ui.session_btn.set_visible(true);
 }
 
 #[cfg(test)]

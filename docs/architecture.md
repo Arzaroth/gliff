@@ -229,6 +229,24 @@ Every crate with `unsafe` documents the safety requirements at each block.
   never baked into the video. An image with no visible shape falls back to the
   default pointer (see `hardware-quirks.md` for why Hyprland sends those).
 
+- **Privacy mode.** A server that listed the `privacy` feature answers
+  `ClientMsg::Privacy` with `ServerMsg::Privacy` carrying the outcome. On a
+  headless session it opens a Wayland connection of its own and gives
+  every other output a `zwlr_layer_surface_v1` on the overlay layer,
+  anchored to all edges, exclusive zone -1, no keyboard interactivity,
+  showing one zero-filled XRGB buffer. A thread keeps serving that
+  connection: an output that appears gets a cover once it has a name, one
+  that goes drops its own. The compositor removes the surfaces when the
+  connection closes, so a dying server cannot leave screens covered. The
+  server also turns every physical input device off through hyprctl
+  (`device[name]:enabled`, or `hl.device` on a Lua config); the virtual
+  keyboard and pointer that carry the session's input, and an input
+  method's, stay on. Devices do not go away with a connection, so a guard
+  started with privacy mode, the server binary run with a hidden
+  `--restore-input-after PID` and in a process group of its own, waits for
+  the server to end and turns them back on if it died first. A mirrored
+  session refuses: covering the screen it shows would only send black.
+
 - **Clipboard.** Lazy, typed and chunked; `gliff_proto::clipboard` has the
   rules and `gliff_transport::clipboard` the engine both peers run. A new
   selection is announced as an `Offer` of mime types (plus a file list when it

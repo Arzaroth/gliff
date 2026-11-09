@@ -280,3 +280,131 @@ mod tests {
         assert!(args.contains("audio.format=F32LE audio.rate=48000 audio.channels=2"));
     }
 }
+
+#[cfg(test)]
+mod isolated_pipewire_test {
+    use super::*;
+
+    /// The amplitude of the 1 kHz component of `samples` (left channel).
+    fn tone_amplitude(samples: &[f32]) -> (f32, f32) {
+        let left: Vec<f32> = samples.iter().step_by(CHANNELS).copied().collect();
+        let (mut i, mut q, mut energy) = (0.0f64, 0.0f64, 0.0f64);
+        for (n, &x) in left.iter().enumerate() {
+            let phase = n as f64 * 2.0 * std::f64::consts::PI * 1000.0 / SAMPLE_RATE as f64;
+            i += x as f64 * phase.cos();
+            q += x as f64 * phase.sin();
+            energy += (x as f64).powi(2);
+        }
+        let n = left.len() as f64;
+        let amplitude = 2.0 * (i * i + q * q).sqrt() / n;
+        let rms = (energy / n).sqrt();
+        (amplitude as f32, rms as f32)
+    }
+
+    #[test]
+    #[ignore = "needs a private PipeWire daemon and GLIFF_AUDIO_TEST_PCM"]
+    fn the_client_microphone_is_the_default_source_and_carries_its_sound() {
+        assert_eq!(std::env::var("GLIFF_ISOLATED_PIPEWIRE").as_deref(), Ok("1"));
+        let pcm = std::fs::read(std::env::var("GLIFF_AUDIO_TEST_PCM").unwrap()).unwrap();
+        let tone: Vec<f32> = pcm
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .take(SAMPLE_RATE as usize * CHANNELS * 4)
+            .collect();
+        let recorded =
+            std::env::temp_dir().join(format!("gliff-mic-e2e-{}.f32", std::process::id()));
+        let before = read_default();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let mut mic = Mic::default();
+            mic.start(gliff_proto::AudioCodec::Opus, SAMPLE_RATE, CHANNELS as u32);
+            let node = format!("gliff-mic-{}", std::process::id());
+            let ours = format!("{{\"name\":\"{node}\"}}");
+            assert!(
+                read_default().is_some_and(|d| same_node(&d, &ours)),
+                "the microphone is not the default source"
+            );
+            let mut encoder = gliff_audio::Encoder::new().unwrap();
+            let mut seq = 0;
+            let mut recorder = None;
+            let start = tokio::time::Instant::now();
+            for (frame, chunk) in tone.chunks(FRAME * CHANNELS).enumerate() {
+                if frame == 50 {
+                    recorder = Some(
+                        command("pw-record")
+                            .args([
+                                "--raw",
+                                "--rate",
+                                "48000",
+                                "--channels",
+                                "2",
+                                "--format",
+                                "f32",
+                                "--target",
+                                &node,
+                                "-P",
+                                "{ node.always-process=true node.group=pipewire.dummy }",
+                            ])
+                            .arg(&recorded)
+                            .spawn()
+                            .unwrap(),
+                    );
+                }
+                for packet in encoder.push(chunk).unwrap() {
+                    mic.frame(seq, &packet);
+                    seq += 1;
+                }
+                tokio::time::sleep_until(
+                    start + std::time::Duration::from_millis(10 * (frame as u64 + 1)),
+                )
+                .await;
+            }
+            let mut recorder = recorder.unwrap();
+            let _ = recorder.kill();
+            let _ = recorder.wait();
+            mic.stop();
+        });
+        let after = read_default();
+        match (&before, &after) {
+            (None, None) => {}
+            (Some(before), Some(after)) if same_node(before, after) => {}
+            _ => panic!("the default source was not put back: before {before:?}, after {after:?}"),
+        }
+        let bytes = std::fs::read(&recorded).unwrap();
+        let _ = std::fs::remove_file(&recorded);
+        let samples: Vec<f32> = bytes
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect();
+        let second = SAMPLE_RATE as usize * CHANNELS;
+        assert!(
+            samples.len() >= 2 * second,
+            "recorded {} samples, want two seconds",
+            samples.len()
+        );
+        // Real-time writes against the graph's clock drop or repeat a frame
+        // now and then, which breaks the phase over a long window: judge the
+        // tone in 20 ms blocks.
+        let blocks: Vec<(f32, f32)> = samples[second..2 * second]
+            .chunks_exact(SAMPLE_RATE as usize / 50 * CHANNELS)
+            .map(tone_amplitude)
+            .collect();
+        let clean = blocks
+            .iter()
+            .filter(|(amplitude, rms)| {
+                *amplitude > 0.15 && amplitude * amplitude / 2.0 > 0.9 * rms * rms
+            })
+            .count();
+        eprintln!(
+            "microphone: {clean} of {} blocks carry the tone",
+            blocks.len()
+        );
+        assert!(
+            clean * 10 >= blocks.len() * 9,
+            "the tone did not come through cleanly: {blocks:?}"
+        );
+    }
+}

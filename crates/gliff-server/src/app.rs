@@ -1,6 +1,7 @@
 //! A session that runs one app on its private screen: the app starts on a
-//! workspace of its own pinned to the session's headless output, with no
-//! gaps or border, so its window fills the screen. The session follows the
+//! workspace of its own pinned to the session's headless output, and its
+//! first window opens fullscreen, above the bar the remote's shell puts on
+//! every screen. The session follows the
 //! app's title and ends when its last window closes; ending the session
 //! first closes the app as its close button would.
 

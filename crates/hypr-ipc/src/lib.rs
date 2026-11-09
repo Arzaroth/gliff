@@ -176,14 +176,15 @@ impl Instance {
     }
 
     /// Start `command` through the compositor's shell onto the named
-    /// workspace `workspace`, which takes the focus.
+    /// workspace `workspace`, which takes the focus. Its first window opens
+    /// fullscreen, above any bar on that monitor.
     pub fn exec_on_workspace(&self, workspace: &str, command: &str) -> Result<()> {
         match self.dispatch(&format!(
-            "dispatch exec [workspace name:{workspace}] {command}"
+            "dispatch exec [workspace name:{workspace}; fullscreen] {command}"
         )) {
             Err(Error::Command { response, .. }) if response.contains("lua") => {
                 self.dispatch(&format!(
-                    "eval hl.exec_cmd({}, {{ workspace = \"name:{workspace}\" }})",
+                    "eval hl.exec_cmd({}, {{ workspace = \"name:{workspace}\", fullscreen = true }})",
                     lua_string(command)
                 ))
             }
@@ -656,8 +657,8 @@ mod tests {
         assert_eq!(
             commands,
             [
-                r#"dispatch exec [workspace name:gliff-app-7] foot -T "a b""#,
-                r#"eval hl.exec_cmd("foot -T \"a b\"", { workspace = "name:gliff-app-7" })"#,
+                r#"dispatch exec [workspace name:gliff-app-7; fullscreen] foot -T "a b""#,
+                r#"eval hl.exec_cmd("foot -T \"a b\"", { workspace = "name:gliff-app-7", fullscreen = true })"#,
             ]
         );
     }

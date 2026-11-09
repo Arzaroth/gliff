@@ -669,6 +669,59 @@ mod tests {
     }
 
     #[test]
+    fn an_app_session_links_only_the_apps_processes() {
+        let me = std::process::id();
+        let graph: std::collections::HashMap<u64, serde_json::Value> = [
+            node(
+                10,
+                json!({"node.name": "gliff-audio-1", "media.class": "Stream/Input/Audio"}),
+            ),
+            port(11, 10, "input", "FL"),
+            node(
+                20,
+                json!({"node.name": "app", "media.class": "Stream/Output/Audio",
+                            "application.process.id": me}),
+            ),
+            port(21, 20, "output", "FL"),
+            (
+                30,
+                json!({"id": 30, "type": "PipeWire:Interface:Client",
+                        "info": {"props": {"application.process.id": me.to_string()}}}),
+            ),
+            node(
+                31,
+                json!({"node.name": "app-helper", "media.class": "Stream/Output/Audio",
+                            "client.id": 30}),
+            ),
+            port(32, 31, "output", "FL"),
+            node(
+                40,
+                json!({"node.name": "elsewhere", "media.class": "Stream/Output/Audio",
+                            "application.process.id": 1}),
+            ),
+            port(41, 40, "output", "FL"),
+            node(
+                50,
+                json!({"node.name": "unknown", "media.class": "Stream/Output/Audio"}),
+            ),
+            port(51, 50, "output", "FL"),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            missing_links(&graph, "gliff-audio-1", None),
+            vec![(21, 11), (32, 11), (41, 11), (51, 11)]
+        );
+        let app = crate::app::Processes::default();
+        assert!(missing_links(&graph, "gliff-audio-1", Some(&app)).is_empty());
+        app.set(vec![u64::from(me)]);
+        assert_eq!(
+            missing_links(&graph, "gliff-audio-1", Some(&app)),
+            vec![(21, 11), (32, 11)]
+        );
+    }
+
+    #[test]
     fn a_packet_dropped_on_a_full_queue_leaves_a_gap() {
         let (tx, mut rx) = mpsc::channel(QUEUE);
         let mut seq = 0;

@@ -24,7 +24,7 @@ pub enum Poll {
 pub struct Processes(std::sync::Arc<std::sync::Mutex<Vec<u64>>>);
 
 impl Processes {
-    fn set(&self, roots: Vec<u64>) {
+    pub(crate) fn set(&self, roots: Vec<u64>) {
         *self.0.lock().unwrap_or_else(|e| e.into_inner()) = roots;
     }
 
@@ -152,5 +152,23 @@ mod tests {
         let ours = on_workspace(clients, "gliff-app-7");
         assert_eq!(ours.len(), 1);
         assert_eq!(ours[0].address, "0x1");
+    }
+
+    #[test]
+    fn processes_are_the_roots_and_their_descendants() {
+        let me = u64::from(std::process::id());
+        let mut child = std::process::Command::new("sleep")
+            .arg("10")
+            .spawn()
+            .unwrap();
+        let processes = Processes::default();
+        assert!(!processes.contains(me));
+        processes.set(vec![me]);
+        assert!(processes.contains(me));
+        assert!(processes.contains(u64::from(child.id())));
+        assert!(!processes.contains(parent(me).unwrap()));
+        assert!(!processes.contains(1));
+        child.kill().unwrap();
+        child.wait().unwrap();
     }
 }

@@ -101,6 +101,14 @@ struct App {
     window: adw::ApplicationWindow,
     /// The picture, upcast; input controllers attach to it and we measure it.
     video: gtk::Widget,
+    /// Holds the picture; it scrolls only at actual size.
+    scroller: gtk::ScrolledWindow,
+    /// Show a mirrored screen at its own pixel size, scrolling, rather than
+    /// fitted to the window.
+    actual_size: Cell<bool>,
+    /// While the pointer rests near an edge of the scrolled picture.
+    edge_scroll: Cell<Option<EdgeScroll>>,
+    edge_timer: Cell<bool>,
     /// What the picture shows: the latest frame fitted to the window.
     frame: paintable::FramePaintable,
     stats: gtk::Label,
@@ -502,6 +510,10 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
     let ui = Rc::new(App {
         window: window.clone(),
         video: video.clone(),
+        scroller: scroller.clone(),
+        actual_size: Cell::new(false),
+        edge_scroll: Cell::new(None),
+        edge_timer: Cell::new(false),
         frame,
         stats: stats.clone(),
         status: status.clone(),
@@ -1096,6 +1108,7 @@ fn show_session(ui: &Rc<App>, s: &Rc<Session>) {
     ui.stats.set_text(&s.stats.borrow());
     ui.target.borrow_mut().take();
     show_pictures(ui);
+    apply_scaling(ui);
     ui.video.set_cursor(s.cursor.borrow().as_ref());
     // A background session kept the size the window had when it was last
     // shown.
@@ -1116,6 +1129,7 @@ fn show_nothing(ui: &Rc<App>) {
     show_status(ui, "Not connected");
     ui.stats.set_text("");
     ui.frame.clear();
+    apply_scaling(ui);
     ui.video.set_cursor(None);
     update_sound(ui);
     update_mic(ui);
@@ -1643,6 +1657,7 @@ fn poll_status(ui: Rc<App>, s: Rc<Session>, rx: Receiver<Status>, generation: u6
                     }
                     if is_active(&ui, &s) {
                         refresh_screens(&ui);
+                        apply_scaling(&ui);
                     }
                 }
                 Status::Privacy(enabled) => {
@@ -2196,6 +2211,7 @@ fn install_input_handlers(
         let ui = ui.clone();
         motion.connect_motion(move |_, x, y| {
             retarget(&ui, x, y);
+            edge_scroll(&ui, x, y);
             let (rx, ry) = to_remote(&ui, x, y);
             send(&ui, ClientMsg::PointerMotion { x: rx, y: ry });
         });
@@ -2220,6 +2236,7 @@ fn install_input_handlers(
             // A deliberate release lasts only as long as the pointer rests on
             // the picture; leaving and coming back captures again.
             ui.released.set(false);
+            ui.edge_scroll.set(None);
             if gtk::prelude::GtkWindowExt::focus(&window).is_some_and(|f| f == ui.video) {
                 gtk::prelude::GtkWindowExt::set_focus(&window, gtk::Widget::NONE);
             }
@@ -2721,6 +2738,20 @@ fn install_session_menu(ui: &Rc<App>) {
         );
     });
     ui.session_list.append(&view_only);
+    let actual = gtk::CheckButton::with_label("Actual size");
+    actual.set_tooltip_text(Some(
+        "Show the remote screen pixel for pixel, scrolling at the window's edges",
+    ));
+    let weak = Rc::downgrade(ui);
+    actual.connect_toggled(move |check| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        if ui.actual_size.replace(check.is_active()) != check.is_active() {
+            apply_scaling(&ui);
+        }
+    });
+    ui.session_list.append(&actual);
     let heading = gtk::Label::builder()
         .label("Send keys")
         .halign(gtk::Align::Start)
@@ -2897,6 +2928,8 @@ fn install_session_menu(ui: &Rc<App>) {
         };
         let lockable = active(&ui).is_some_and(|s| s.connected.get() && s.lockable.get());
         lock_now.set_sensitive(lockable);
+        actual.set_sensitive(active(&ui).is_some_and(|s| actual_size_of(&ui, &s).is_some()));
+        actual.set_active(ui.actual_size.get());
         let coverable = active(&ui).filter(|s| s.connected.get() && s.coverable.get());
         privacy_syncing.set(true);
         privacy.set_sensitive(coverable.is_some());
@@ -2917,6 +2950,106 @@ fn install_session_menu(ui: &Rc<App>) {
             check.set_sensitive(tunable);
         }
         syncing.set(false);
+    });
+}
+
+/// The physical size of the screen the active session mirrors, when it can
+/// be shown at actual size: a mirrored single screen whose size is known.
+fn actual_size_of(ui: &App, s: &Session) -> Option<(u32, u32)> {
+    if s.headless.get() || !s.connected.get() || all_screens(ui).is_some() {
+        return None;
+    }
+    let current = s.current_output.borrow();
+    s.outputs
+        .borrow()
+        .iter()
+        .find(|o| o.name == *current)
+        .map(|o| (o.width, o.height))
+}
+
+/// Size the picture to the remote screen's pixels and let it scroll, or fit
+/// it to the window again. The resize handler then asks the server for the
+/// matching stream size.
+fn apply_scaling(ui: &App) {
+    let size = active(ui)
+        .filter(|_| ui.actual_size.get())
+        .and_then(|s| actual_size_of(ui, &s));
+    let policy = match size {
+        Some((width, height)) => {
+            let device = device_scale(ui);
+            ui.video.set_size_request(
+                (width as f64 / device).round() as i32,
+                (height as f64 / device).round() as i32,
+            );
+            gtk::PolicyType::Automatic
+        }
+        None => {
+            ui.video.set_size_request(-1, -1);
+            ui.edge_scroll.set(None);
+            gtk::PolicyType::Never
+        }
+    };
+    ui.scroller.set_policy(policy, policy);
+}
+
+/// A scroll direction (-1, 0 or 1 on each axis) and the pointer in
+/// viewport coordinates.
+type EdgeScroll = ((f64, f64), (f64, f64));
+
+/// Pixels from a viewport edge where the pointer scrolls the picture, and
+/// how far each tick scrolls.
+const EDGE: f64 = 32.0;
+const EDGE_STEP: f64 = 16.0;
+
+/// The direction a pointer at `(x, y)` in a `width` x `height` viewport
+/// scrolls: -1, 0 or 1 on each axis.
+fn edge_direction(x: f64, y: f64, width: f64, height: f64) -> (f64, f64) {
+    let axis = |v: f64, extent: f64| {
+        if v < EDGE {
+            -1.0
+        } else if v > extent - EDGE {
+            1.0
+        } else {
+            0.0
+        }
+    };
+    (axis(x, width), axis(y, height))
+}
+
+/// Scroll the picture while the pointer rests near an edge of the viewport,
+/// moving the remote pointer with the content under it.
+fn edge_scroll(ui: &Rc<App>, x: f64, y: f64) {
+    if ui.scroller.hscrollbar_policy() == gtk::PolicyType::Never {
+        return;
+    }
+    let (h, v) = (ui.scroller.hadjustment(), ui.scroller.vadjustment());
+    let at = (x - h.value(), y - v.value());
+    let direction = edge_direction(
+        at.0,
+        at.1,
+        ui.scroller.width() as f64,
+        ui.scroller.height() as f64,
+    );
+    if direction == (0.0, 0.0) {
+        ui.edge_scroll.set(None);
+        return;
+    }
+    ui.edge_scroll.set(Some((direction, at)));
+    if ui.edge_timer.replace(true) {
+        return;
+    }
+    let ui = ui.clone();
+    glib::timeout_add_local(Duration::from_millis(16), move || {
+        let Some(((dx, dy), (vx, vy))) = ui.edge_scroll.get() else {
+            ui.edge_timer.set(false);
+            return glib::ControlFlow::Break;
+        };
+        let (h, v) = (ui.scroller.hadjustment(), ui.scroller.vadjustment());
+        h.set_value(h.value() + dx * EDGE_STEP);
+        v.set_value(v.value() + dy * EDGE_STEP);
+        let (rx, ry) = to_remote(&ui, vx + h.value(), vy + v.value());
+        send(&ui, ClientMsg::PointerMotion { x: rx, y: ry });
+        glib::ControlFlow::Continue
     });
 }
 
@@ -3029,6 +3162,7 @@ fn enter_all_screens(ui: &Rc<App>, s: &Rc<Session>) {
     }
     if is_active(ui, s) {
         show_pictures(ui);
+        apply_scaling(ui);
         request_resize(ui);
         request_zoom(ui);
         refresh_screens(ui);
@@ -3053,6 +3187,7 @@ fn leave_all_screens(ui: &Rc<App>, s: &Rc<Session>) {
     ui.target.borrow_mut().take();
     if is_active(ui, s) {
         show_pictures(ui);
+        apply_scaling(ui);
         ui.video.set_cursor(s.cursor.borrow().as_ref());
         request_resize(ui);
         request_zoom(ui);

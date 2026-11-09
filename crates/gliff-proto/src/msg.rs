@@ -166,6 +166,12 @@ pub struct OutputInfo {
     pub height: u32,
     #[n(3)]
     pub scale_milli: u32,
+    /// Top-left corner in the remote's logical layout, when the server
+    /// knows it.
+    #[n(4)]
+    pub x: Option<i32>,
+    #[n(5)]
+    pub y: Option<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
@@ -771,6 +777,8 @@ mod tests {
                         width: 1920,
                         height: 1080,
                         scale_milli: 1000,
+                        x: None,
+                        y: None,
                     }],
                     features: vec![],
                 },
@@ -816,6 +824,8 @@ mod tests {
                         width: 2560,
                         height: 1440,
                         scale_milli: 1000,
+                        x: None,
+                        y: None,
                     }],
                     current: "DP-1".into(),
                     selectable: true,

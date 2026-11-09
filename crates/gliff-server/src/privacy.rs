@@ -3,7 +3,10 @@
 //! takes the pointer there. A screen plugged in while privacy mode is on is
 //! covered as it appears. The surfaces belong to a Wayland connection of
 //! their own, served by a thread, so they go away with it: on drop, and if
-//! the server dies.
+//! the server dies. The remote's own keyboards and pointers are off for as
+//! long, so whoever sits there cannot type into or click the session.
+
+use std::os::unix::process::CommandExt;
 
 use anyhow::{Context, Result};
 use wayland_client::globals::GlobalListContents;
@@ -23,10 +26,12 @@ use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::{
 pub struct Privacy {
     stop: Option<calloop::channel::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
+    input: Option<InputBlock>,
 }
 
 impl Drop for Privacy {
     fn drop(&mut self) {
+        drop(self.input.take());
         drop(self.stop.take());
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -105,11 +110,100 @@ impl Privacy {
                     tracing::warn!(error = %e, "privacy covers lost the compositor");
                 }
             })?;
+        let input = target
+            .instance()
+            .map_err(anyhow::Error::from)
+            .and_then(InputBlock::start)
+            .map_err(
+                |e| tracing::warn!(error = %format!("{e:#}"), "cannot turn the local input off"),
+            )
+            .ok();
         Ok(Self {
             stop: Some(stop),
             thread: Some(thread),
+            input,
         })
     }
+}
+
+/// The physical input devices, turned off until drop. A guard process,
+/// detached from the server, turns them back on if the server dies first.
+struct InputBlock {
+    instance: hypr_ipc::Instance,
+    devices: Vec<String>,
+    guard: std::process::Child,
+}
+
+impl InputBlock {
+    fn start(instance: hypr_ipc::Instance) -> Result<Self> {
+        let devices: Vec<String> = instance
+            .input_devices()?
+            .into_iter()
+            .filter(|name| is_physical(name))
+            .collect();
+        let guard = std::process::Command::new(std::env::current_exe()?)
+            .arg("--instance")
+            .arg(&instance.signature)
+            .arg("--restore-input-after")
+            .arg(std::process::id().to_string())
+            .args(devices.iter().flat_map(|d| ["--device", d.as_str()]))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .process_group(0)
+            .spawn()
+            .context("start the input guard")?;
+        let mut block = Self {
+            instance,
+            devices: Vec::new(),
+            guard,
+        };
+        for device in devices {
+            block
+                .instance
+                .set_device_enabled(&device, false)
+                .with_context(|| format!("turn {device} off"))?;
+            block.devices.push(device);
+        }
+        tracing::info!(devices = ?block.devices, "local input off");
+        Ok(block)
+    }
+}
+
+impl Drop for InputBlock {
+    fn drop(&mut self) {
+        enable(&self.instance, &self.devices);
+        let _ = self.guard.kill();
+        let _ = self.guard.wait();
+    }
+}
+
+/// Gliff's own and other programs' virtual devices carry the session's
+/// input, or an input method's, and stay on.
+fn is_physical(name: &str) -> bool {
+    !name.starts_with("hl-virtual-")
+        && !name.starts_with("virtual-")
+        && !name.starts_with("unknown-device")
+}
+
+fn enable(instance: &hypr_ipc::Instance, devices: &[String]) {
+    for device in devices {
+        if let Err(e) = instance.set_device_enabled(device, true) {
+            tracing::warn!(device, error = %e, "cannot turn the local input back on");
+        }
+    }
+}
+
+/// The guard's whole life: wait for the server `pid` to end, then turn
+/// `devices` back on.
+pub fn restore_input_after(pid: u32, instance: Option<&str>, devices: &[String]) -> Result<()> {
+    let proc = std::path::PathBuf::from(format!("/proc/{pid}"));
+    while proc.exists() {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    let instance = hypr_ipc::Instance::discover(instance)?;
+    enable(&instance, devices);
+    Ok(())
 }
 
 impl State {

@@ -19,6 +19,8 @@ both ends, and falls back to the CPU on machines where it cannot.
   exists only for your session and follows the size of your window.
 - Your keyboard layout, not the remote's: keys map the same on both ends.
 - A shared clipboard in both directions: text, images, and copied files.
+- The remote machine's sound, in both directions, so two machines can show
+  each other at once without echo.
 - Quality that adapts to the link, giving up frame rate before sharpness.
 - Reconnection when the link drops.
 - A window that follows your Omarchy theme.
@@ -26,6 +28,9 @@ both ends, and falls back to the CPU on machines where it cannot.
 ## Requirements
 
 - Hyprland on both machines, with a session running on the remote one.
+- For sound from the remote: PipeWire (`pw-record`, `pw-dump`, `pw-link`),
+  or PulseAudio's `parec`. Playback uses the client's ALSA default device;
+  install `pipewire-alsa` or `pulseaudio-alsa` to route it through your sound server.
 - ssh access from your machine to the remote one.
 - For GPU video: an AMD or Intel GPU with its Vulkan and VA-API drivers
   (on Arch, `vulkan-radeon` and `mesa` for AMD, or `vulkan-intel` and
@@ -122,6 +127,17 @@ Local selections marked `x-kde-passwordManagerHint` are not shared.
 Changing the clipboard cancels unfinished pastes from this machine to the
 remote host. Wait for a file paste to finish before copying something else. Switching
 tabs also cancels unfinished pastes to the tab you leave.
+
+**Sound.** The window plays the sound of the machine it shows. The speaker
+button in the header mutes it and remembers that; `gliff --no-audio` starts
+muted. Only the tab you look at plays, and other tabs' hosts stop recording.
+A host with PipeWire's `pw-record` and `pw-dump` sends what its applications
+play except Gliff itself, so when two machines show each other, neither hears
+its own sound come back. A host missing either sends its whole output, Gliff
+included, and two such machines that show each other echo; mute one side to
+stop it. Hosts keep playing their sound on their own speakers. Sound is Opus
+at 128 kbit/s, and the client buffers 40 to 250 ms of it, more on a jittery
+link.
 
 **Slow links.** gliff measures the link and lowers the frame rate, then the
 colour detail, then the resolution, and raises them again when there is

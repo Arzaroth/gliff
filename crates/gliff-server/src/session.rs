@@ -285,9 +285,19 @@ where
     // Once the app has closed: when to stop waiting for the writer to send
     // the last messages, AppClosed among them.
     let mut closing: Option<tokio::time::Instant> = None;
+    let audio_supported = session
+        .caps
+        .features
+        .iter()
+        .any(|feature| feature == gliff_proto::FEATURE_AUDIO);
+    let mut sound = crate::audio::Sound::default();
     loop {
         let flow = tokio::select! {
             msg = msg_rx.recv() => match msg {
+                Some(Inbound::Msg(ClientMsg::Audio { enabled })) => {
+                    sound.set(enabled && audio_supported, &session.writer);
+                    ControlFlow::Continue(())
+                }
                 Some(Inbound::Msg(msg)) => session.on_client_msg(msg).await?,
                 Some(Inbound::Clipboard(msg, payload)) => {
                     clipboard.on_peer_msg(msg, payload);
@@ -337,6 +347,10 @@ where
                 if closing.is_some() =>
             {
                 ControlFlow::Break(())
+            }
+            packet = sound.next(), if sound.is_on() => {
+                sound.send(packet, &session.writer);
+                ControlFlow::Continue(())
             }
             report = write_reports.recv() => {
                 let elapsed = report.context("writer task ended")??;
@@ -675,6 +689,8 @@ impl Session {
                 self.inject(InputCmd::SetKeymap(keymap))
             }
             ClientMsg::Keymap { .. } => {}
+            // Handled by the session loop, which owns the sound.
+            ClientMsg::Audio { .. } => {}
             ClientMsg::Hello { .. } => anyhow::bail!("unexpected second Hello"),
         }
         Ok(ControlFlow::Continue(()))

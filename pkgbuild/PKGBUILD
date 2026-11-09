@@ -9,6 +9,7 @@ license=('MIT' 'BSD-2-Clause')
 install='gliff.install'
 options=('!debug' '!lto')
 depends=(
+  'alsa-lib'
   'dbus'
   'gcc-libs'
   'glibc'
@@ -20,11 +21,14 @@ depends=(
   'libxkbcommon'
   'mesa'
   'openssh'
+  'pipewire'
   'vulkan-icd-loader'
   'wayland'
 )
-makedepends=('cargo' 'pkgconf' 'nasm')
-optdepends=('vulkan-radeon: Vulkan compute on AMD'
+makedepends=('cargo' 'pkgconf' 'nasm' 'cmake')
+optdepends=('pipewire-alsa: audio playback through PipeWire'
+            'pulseaudio-alsa: audio playback through PulseAudio'
+            'vulkan-radeon: Vulkan compute on AMD'
             'vulkan-intel: Vulkan compute on Intel'
             'intel-media-driver: VA-API H.264 codec on Intel'
             'vulkan-tools: vulkaninfo for debugging'

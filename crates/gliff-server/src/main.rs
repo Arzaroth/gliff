@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 mod app;
+mod audio;
 mod clipboard;
 mod notify;
 mod rate;

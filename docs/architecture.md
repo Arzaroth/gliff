@@ -342,9 +342,15 @@ Every crate with `unsafe` documents the safety requirements at each block.
   around one app. Before streaming, the server pins a workspace named
   `gliff-app-<pid>` to its headless output with no gaps, border or
   rounding (`Instance::bare_workspace_on`) and starts the command onto it
-  through the compositor's shell (`exec_on_workspace`), so the app's
-  window fills the screen and its popups render inside it. Every 500 ms
-  it lists the windows on that workspace: a title change goes to the
+  through the compositor's shell (`exec_on_workspace`) with a
+  `fullscreen` rule, so the app's first window covers the screen and the
+  bar the remote's shell starts on every output, and its popups render
+  inside it. Every 500 ms it lists the windows on that workspace: their
+  processes become the session's sound filter, so the audio linker links
+  only streams whose `application.process.id` (on the node or its client)
+  is one of them or descends from one, read through `/proc/<pid>/stat`;
+  with no audio graph to filter, an app session sends no sound rather than
+  the whole output. A title change goes to the
   client as `AppTitle`, and once a window has existed and none is left
   (or none opened within 30 s) it sends `AppClosed`, stops encoding, lets
   the writer flush for at most a second and ends. Ending the session any

@@ -649,6 +649,9 @@ fn serve_test(node: &std::path::Path, addr: &str, frames: usize, video: VideoMod
         } else {
             Vec::new()
         };
+        // GLIFF_SELECT_OUTPUT asks to mirror that screen; each Outputs
+        // report prints as OUTPUTS.
+        let select_output = std::env::var("GLIFF_SELECT_OUTPUT").ok();
         let recv_file = std::env::var("GLIFF_RECV_CLIP_FILE").ok();
         let recv_dir = std::env::var("GLIFF_RECV_CLIP_DIR").ok().map(PathBuf::from);
         let mut clip_recv: Vec<u8> = Vec::new();
@@ -715,6 +718,11 @@ fn serve_test(node: &std::path::Path, addr: &str, frames: usize, video: VideoMod
                             writer.write_msg(&ClientMsg::Key { keycode, pressed: false }).await?;
                         }
                     }
+                    if got == 2 {
+                        if let Some(name) = select_output.clone() {
+                            writer.write_msg(&ClientMsg::SelectOutput { name }).await?;
+                        }
+                    }
                     if got == 3 { writer.write_msg(&ClientMsg::Resize { width: 800, height: 600, scale: 2.0 }).await?; }
                     if got == 4 && (send_clip.is_some() || send_file.is_some() || !send_files.entries.is_empty()) {
                         let mut mime_types: Vec<String> = Vec::new();
@@ -734,6 +742,10 @@ fn serve_test(node: &std::path::Path, addr: &str, frames: usize, video: VideoMod
                     scaled = if session.headless { scale_milli == 2000 } else { w <= 800 && h <= 600 && scale_milli < 1000 };
                 }
                 ServerMsg::CursorShape { argb_len, .. } => { let _ = reader.read_payload(argb_len).await?; }
+                ServerMsg::Outputs { outputs, current, selectable } => {
+                    let names: Vec<&str> = outputs.iter().map(|o| o.name.as_str()).collect();
+                    eprintln!("OUTPUTS: current={current} selectable={selectable} screens={}", names.join(","));
+                }
                 // The server offers its selection; ask for one item and keep it once complete.
                 ServerMsg::ClipboardOffer { serial, mime_types, files } => {
                     recv_serial = serial;

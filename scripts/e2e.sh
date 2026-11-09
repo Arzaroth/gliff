@@ -17,6 +17,9 @@
 #  10. a keymap sent mid-session is the one the compositor serves its clients
 #  11. a keymap change mid-session reaches clients behind an input method
 #      (fcitx5), when fcitx5 and foot are installed
+#  12. focus changes do not stack shortcut-inhibit handlers
+#  15. a mirrored session lists the screens and switches to another one;
+#      a private screen refuses to switch
 #
 # Exits non-zero on the first failure.
 set -uo pipefail
@@ -372,5 +375,33 @@ inhibits=$(grep -c "compositor shortcut inhibit" "$ilog")
     || fail "$inhibits shortcut-inhibit notifications for $focused focus changes"
 rm -rf "$ixdg" "$txdg" "$ilog"
 echo "   shortcut inhibit PASS"
+
+echo "== 15. screen selection =="
+first=$(hyprctl monitors -j | python3 -c "import sys,json; print(next(m['name'] for m in json.load(sys.stdin) if not m['name'].startswith('gliff')))")
+hyprctl output create headless e2eselect >/dev/null 2>&1; sleep 1
+second=$(hyprctl monitors -j | python3 -c "import sys,json; print(next(m['name'] for m in json.load(sys.stdin) if 'e2eselect' in m['name']))")
+hyprctl eval "hl.monitor({ output = \"$second\", mode = \"1024x768@60\", position = \"auto\", scale = 1 })" >/dev/null 2>&1; sleep 1
+selectlog=$(mktemp)
+"$SERVER" --listen 127.0.0.1:9053 --output "$first" --instance "$NEST_SIG" >/tmp/gliff-e2e-select-server.log 2>&1 &
+ssp=$!; PIDS+=("$ssp"); sleep 2
+damage & sdp=$!; PIDS+=("$sdp")
+GLIFF_SELECT_OUTPUT=$second timeout 30 $PROBE --video "$CLIENT_VIDEO" serve-test --connect 127.0.0.1:9053 --frames 20 >"$selectlog" 2>&1 \
+    || fail "screen selection client ($(tail -2 "$selectlog" | tr '\n' ' '))"
+kill "$sdp" "$ssp" 2>/dev/null; sleep 1
+grep -q "^OUTPUTS: current=$first selectable=true screens=.*$second" "$selectlog" || fail "the server did not list its screens ($(grep OUTPUTS "$selectlog" | head -1))"
+grep -q "^OUTPUTS: current=$second selectable=true" "$selectlog" || fail "the server did not switch to $second ($(grep OUTPUTS "$selectlog" | tr '\n' ' '))"
+sed -n "/OUTPUTS: current=$second/,\$p" "$selectlog" | grep -q "reconfig to" || fail "the stream was not refitted to $second"
+grep -q '^PASS decoded 20 frames' "$selectlog" || fail "frames stopped after switching screens"
+"$SERVER" --listen 127.0.0.1:9053 --headless --instance "$NEST_SIG" >/tmp/gliff-e2e-select-server.log 2>&1 &
+ssp=$!; PIDS+=("$ssp"); sleep 2
+damage & sdp=$!; PIDS+=("$sdp")
+GLIFF_SELECT_OUTPUT=$first timeout 30 $PROBE --video "$CLIENT_VIDEO" serve-test --connect 127.0.0.1:9053 --frames 8 >"$selectlog" 2>&1 \
+    || fail "private screen selection client ($(tail -2 "$selectlog" | tr '\n' ' '))"
+kill "$sdp" "$ssp" 2>/dev/null; sleep 1
+grep -q "^OUTPUTS: current=gliff[^ ]* selectable=false" "$selectlog" || fail "a private screen offered to switch ($(grep OUTPUTS "$selectlog" | head -1))"
+grep -q "^OUTPUTS: current=$first" "$selectlog" && fail "a private screen switched to $first"
+hyprctl output remove "$second" >/dev/null 2>&1
+rm -f "$selectlog"
+echo "   screen selection PASS"
 
 echo "E2E PASS: all checks passed"

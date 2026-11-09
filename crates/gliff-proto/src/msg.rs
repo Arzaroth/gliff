@@ -34,7 +34,12 @@ pub const PROTOCOL_VERSION: u16 = 1;
 
 /// Optional behaviours this build supports, exchanged in the handshake. A
 /// behaviour is used only when both ends list it.
-pub const FEATURES: &[&str] = &[];
+pub const FEATURES: &[&str] = &[FEATURE_PRIVACY];
+
+/// Privacy mode: `ClientMsg::Privacy` asks a session on a private screen to
+/// cover the remote's other screens and turn its own input off;
+/// `ServerMsg::Privacy` reports the outcome.
+pub const FEATURE_PRIVACY: &str = "privacy";
 
 pub fn features() -> Vec<String> {
     FEATURES.iter().map(|f| f.to_string()).collect()
@@ -299,6 +304,13 @@ pub enum ClientMsg {
         #[n(0)]
         t: u64,
     },
+    /// Turn privacy mode on or off. Sent only to a server that listed
+    /// [`FEATURE_PRIVACY`]; only a session on a private screen turns it on.
+    #[n(26)]
+    Privacy {
+        #[n(0)]
+        enabled: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
@@ -461,6 +473,12 @@ pub enum ServerMsg {
     Ping {
         #[n(0)]
         t: u64,
+    },
+    /// Whether privacy mode is on, after each `ClientMsg::Privacy`.
+    #[n(16)]
+    Privacy {
+        #[n(0)]
+        enabled: bool,
     },
 }
 
@@ -720,6 +738,7 @@ mod tests {
                 "820682182a1903e8",
             ),
             (ClientMsg::RequestKeyframe, "820780"),
+            (ClientMsg::Privacy { enabled: true }, "82181a81f5"),
         ];
         for (msg, bytes) in client {
             assert_eq!(hex(&minicbor::to_vec(&msg).unwrap()), bytes, "{msg:?}");
@@ -775,6 +794,7 @@ mod tests {
                 "8202860102f5818400000a0a18641832",
             ),
             (ServerMsg::error(ERROR_VERSION, "m"), "82098301616d01"),
+            (ServerMsg::Privacy { enabled: false }, "821081f4"),
         ];
         for (msg, bytes) in server {
             assert_eq!(hex(&minicbor::to_vec(&msg).unwrap()), bytes, "{msg:?}");

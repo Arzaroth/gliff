@@ -6,6 +6,7 @@
 
 mod clipboard;
 mod notify;
+mod privacy;
 mod rate;
 mod session;
 mod writer;
@@ -73,6 +74,12 @@ struct Cli {
     /// GLIFF_CAPTURE environment variable.
     #[arg(long, value_parser = ["auto", "dmabuf", "shm"])]
     capture: Option<String>,
+    /// Privacy mode's guard: wait for this server process to end, then turn
+    /// the `--device` inputs back on.
+    #[arg(long, hide = true, value_name = "PID")]
+    restore_input_after: Option<u32>,
+    #[arg(long, hide = true, requires = "restore_input_after")]
+    device: Vec<String>,
 }
 
 fn main() -> Result<()> {
@@ -83,6 +90,9 @@ fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
+    if let Some(pid) = cli.restore_input_after {
+        return privacy::restore_input_after(pid, cli.instance.as_deref(), &cli.device);
+    }
     if cli.stdio {
         assert_stdout_is_free()?;
     }

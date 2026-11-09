@@ -264,9 +264,21 @@ where
         cursor_shape_id: 0,
     };
 
+    let privacy_supported = session
+        .caps
+        .features
+        .iter()
+        .any(|feature| feature == gliff_proto::FEATURE_PRIVACY);
+    let mut privacy: Option<crate::privacy::Privacy> = None;
     loop {
         let flow = tokio::select! {
             msg = msg_rx.recv() => match msg {
+                Some(Inbound::Msg(ClientMsg::Privacy { enabled })) => {
+                    if privacy_supported {
+                        privacy = session.set_privacy(enabled, privacy.take(), &cfg.target);
+                    }
+                    ControlFlow::Continue(())
+                }
                 Some(Inbound::Msg(msg)) => session.on_client_msg(msg).await?,
                 Some(Inbound::Clipboard(msg, payload)) => {
                     clipboard.on_peer_msg(msg, payload);
@@ -335,6 +347,7 @@ where
         session.pump_encoder()?;
     }
 
+    drop(privacy);
     // Dropping the session ends it in order; see `impl Drop for Session`.
     drop(session);
     Ok(())
@@ -508,6 +521,34 @@ const FIRST_FRAME_DEADLINE: Duration = Duration::from_millis(700);
 const START_LEVEL: usize = 1;
 
 impl Session {
+    /// Cover or uncover the remote's other screens, only while this session
+    /// shows a private one, and tell the client the outcome.
+    fn set_privacy(
+        &mut self,
+        enabled: bool,
+        current: Option<crate::privacy::Privacy>,
+        target: &Target,
+    ) -> Option<crate::privacy::Privacy> {
+        let next = match (enabled && self.output.is_headless(), current) {
+            (false, _) => None,
+            (true, Some(covers)) => Some(covers),
+            (true, None) => match crate::privacy::Privacy::start(target, &self.output.name) {
+                Ok(covers) => Some(covers),
+                Err(e) => {
+                    tracing::warn!(error = %format!("{e:#}"), "cannot turn privacy mode on");
+                    None
+                }
+            },
+        };
+        self.writer.send(
+            ServerMsg::Privacy {
+                enabled: next.is_some(),
+            },
+            Vec::new(),
+        );
+        next
+    }
+
     async fn on_client_msg(&mut self, msg: ClientMsg) -> Result<ControlFlow<()>> {
         match msg {
             ClientMsg::Bye => return Ok(ControlFlow::Break(())),
@@ -623,6 +664,8 @@ impl Session {
                 self.inject(InputCmd::SetKeymap(keymap))
             }
             ClientMsg::Keymap { .. } => {}
+            // Handled by the session loop, which owns the covers.
+            ClientMsg::Privacy { .. } => {}
             ClientMsg::Hello { .. } => anyhow::bail!("unexpected second Hello"),
         }
         Ok(ControlFlow::Continue(()))

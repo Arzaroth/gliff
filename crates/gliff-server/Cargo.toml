@@ -17,6 +17,9 @@ tokio = { workspace = true }
 bytes.workspace = true
 gliff-proto.workspace = true
 gliff-transport.workspace = true
+rustix.workspace = true
+wayland-client.workspace = true
+wayland-protocols-wlr.workspace = true
 gliff-vk.workspace = true
 gliff-sw.workspace = true
 drm-fourcc.workspace = true
@@ -24,4 +27,5 @@ hypr-capture.workspace = true
 hypr-input.workspace = true
 hypr-ipc.workspace = true
 hypr-wl.workspace = true
+calloop.workspace = true
 dbus = "0.9"

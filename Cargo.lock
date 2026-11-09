@@ -751,6 +751,7 @@ version = "0.4.1"
 dependencies = [
  "anyhow",
  "bytes",
+ "calloop",
  "clap",
  "dbus",
  "drm-fourcc",
@@ -762,9 +763,12 @@ dependencies = [
  "hypr-input",
  "hypr-ipc",
  "hypr-wl",
+ "rustix 1.1.4",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "wayland-client",
+ "wayland-protocols-wlr",
 ]
 
 [[package]]

@@ -53,7 +53,7 @@ impl Queue {
                     ServerMsg::CursorShape { .. } | ServerMsg::CursorPos { .. }
                 )
             }),
-            ServerMsg::CursorPos { .. } | ServerMsg::Pong { .. } => {
+            ServerMsg::CursorPos { .. } | ServerMsg::Pong { .. } | ServerMsg::Privacy { .. } => {
                 self.packets.retain(|(queued, _)| {
                     std::mem::discriminant(queued) != std::mem::discriminant(&msg)
                 });
@@ -232,6 +232,19 @@ mod tests {
             ServerMsg::StreamConfig { width: 1799, .. }
         ));
         assert!(!queue.video_ready());
+    }
+
+    #[test]
+    fn only_the_newest_privacy_report_waits() {
+        let mut queue = Queue::default();
+        for enabled in [true, false, true] {
+            queue.push(ServerMsg::Privacy { enabled }, Vec::new());
+        }
+        assert_eq!(queue.packets.len(), 1);
+        assert!(matches!(
+            queue.packets[0].0,
+            ServerMsg::Privacy { enabled: true }
+        ));
     }
 
     #[test]

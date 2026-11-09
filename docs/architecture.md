@@ -229,6 +229,12 @@ Every crate with `unsafe` documents the safety requirements at each block.
   never baked into the video. An image with no visible shape falls back to the
   default pointer (see `hardware-quirks.md` for why Hyprland sends those).
 
+- **Session menu.** A header `MenuButton` that stays hidden until a feature
+  adds an entry through `add_session_entry`. View only and the keys to send
+  are client-side: input stops at `send()` and the picture does not take
+  focus, and a key combo is a run of `ClientMsg::Key` presses then releases
+  in reverse, sent with `send_to` so view only does not hold it back.
+
 - **Clipboard.** Lazy, typed and chunked; `gliff_proto::clipboard` has the
   rules and `gliff_transport::clipboard` the engine both peers run. A new
   selection is announced as an `Offer` of mime types (plus a file list when it

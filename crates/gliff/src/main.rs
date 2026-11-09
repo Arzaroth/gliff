@@ -123,6 +123,11 @@ struct App {
     /// Size of the video widget in device pixels, rounded down to even.
     view_size: Cell<(u32, u32)>,
     view_scale: Cell<f64>,
+    /// The session menu, hidden until something adds an entry to it.
+    session_btn: gtk::MenuButton,
+    session_list: gtk::Box,
+    /// Input is not sent: the remote is only watched.
+    view_only: Cell<bool>,
     /// Evdev codes currently held on the remote, so they can all be released
     /// when the keyboard is handed back to the local compositor.
     pressed_keys: RefCell<BTreeSet<u32>>,
@@ -323,6 +328,16 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
         .icon_name("utilities-system-monitor-symbolic")
         .tooltip_text("Show stats")
         .build();
+    let session_list = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(2)
+        .build();
+    let session_btn = gtk::MenuButton::builder()
+        .icon_name("view-more-symbolic")
+        .tooltip_text("Session")
+        .popover(&gtk::Popover::builder().child(&session_list).build())
+        .visible(false)
+        .build();
     let tabs = gtk::Box::builder().spacing(6).build();
     let tabs_scroller = gtk::ScrolledWindow::builder()
         .child(&tabs)
@@ -335,6 +350,7 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
     header.pack_start(&add_revealer);
     header.pack_end(&fullscreen_btn);
     header.pack_end(&stats_btn);
+    header.pack_end(&session_btn);
 
     let stats = gtk::Label::builder()
         .halign(gtk::Align::Start)
@@ -417,6 +433,9 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
         local_clipboard: RefCell::new(None),
         view_size: Cell::new((0, 0)),
         view_scale: Cell::new(1.0),
+        session_btn: session_btn.clone(),
+        session_list,
+        view_only: Cell::new(false),
         pressed_keys: RefCell::new(BTreeSet::new()),
         released: Cell::new(false),
         config_path: Config::default_path(),
@@ -430,6 +449,7 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
     });
     install_input_handlers(&ui, &video, &window, hotkey);
     install_resize_handler(&ui);
+    install_session_keys(&ui);
     install_address_bar(&ui, &connect_btn);
     refresh_tabs(&ui);
 
@@ -1562,6 +1582,9 @@ fn to_remote(ui: &App, x: f64, y: f64) -> (f64, f64) {
 }
 
 fn send(ui: &App, msg: ClientMsg) {
+    if ui.view_only.get() {
+        return;
+    }
     if let Some(s) = active(ui) {
         send_to(&s, msg);
     }
@@ -1813,6 +1836,9 @@ fn install_input_handlers(
         let hotkey = hotkey.clone();
         let last_tap = last_tap.clone();
         key.connect_key_pressed(move |controller, keyval, keycode, state| {
+            if ui.view_only.get() {
+                return glib::Propagation::Proceed;
+            }
             let group = controller
                 .current_event()
                 .and_then(|event| {
@@ -1880,6 +1906,7 @@ fn install_input_handlers(
         motion.connect_enter(move |_, _, _| {
             if active(&ui).is_some()
                 && !ui.released.get()
+                && !ui.view_only.get()
                 && !address_bar_in_use(&ui.window, &ui.entry)
             {
                 video.grab_focus();
@@ -1931,7 +1958,7 @@ fn install_input_handlers(
                 kind,
                 gdk::EventType::ButtonPress | gdk::EventType::TouchBegin
             );
-            if pressed {
+            if pressed && !ui.view_only.get() {
                 ui.released.set(false);
                 video.grab_focus();
             }
@@ -2236,10 +2263,109 @@ fn device_scale(ui: &App) -> f64 {
         .map_or(ui.video.scale_factor() as f64, |s| s.scale())
 }
 
+/// Keys the local compositor would keep for itself, sent from the session
+/// menu as evdev codes, held in order and released in reverse.
+const KEY_COMBOS: &[(&str, &[u32])] = &[
+    ("Super", &[125]),
+    ("Alt+Tab", &[56, 15]),
+    ("Shift+Esc", &[42, 1]),
+    ("Ctrl+Alt+Delete", &[29, 56, 111]),
+    ("Print Screen", &[99]),
+];
+
+fn combo_events(codes: &[u32]) -> Vec<(u32, bool)> {
+    codes
+        .iter()
+        .map(|&code| (code, true))
+        .chain(codes.iter().rev().map(|&code| (code, false)))
+        .collect()
+}
+
+/// View only, and keys the local compositor would otherwise catch. Sent keys
+/// go out even when only watching, since they are asked for explicitly.
+fn install_session_keys(ui: &Rc<App>) {
+    let view_only = gtk::CheckButton::with_label("View only");
+    let weak = Rc::downgrade(ui);
+    view_only.connect_toggled(move |check| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        if check.is_active() {
+            release_pressed_keys(&ui);
+        }
+        ui.view_only.set(check.is_active());
+        // Without focus the picture holds neither the keyboard nor the
+        // compositor's shortcuts, so they all stay local.
+        if check.is_active()
+            && gtk::prelude::GtkWindowExt::focus(&ui.window).is_some_and(|f| f == ui.video)
+        {
+            gtk::prelude::GtkWindowExt::set_focus(&ui.window, gtk::Widget::NONE);
+        }
+        show_hint(
+            &ui,
+            if check.is_active() {
+                "View only: input and shortcuts stay here"
+            } else {
+                "Input is sent again"
+            },
+        );
+    });
+    add_session_entry(ui, &view_only);
+    let heading = gtk::Label::builder()
+        .label("Send keys")
+        .halign(gtk::Align::Start)
+        .css_classes(["dim-label"])
+        .margin_top(6)
+        .build();
+    add_session_entry(ui, &heading);
+    for (label, codes) in KEY_COMBOS {
+        let button = gtk::Button::builder()
+            .label(*label)
+            .has_frame(false)
+            .halign(gtk::Align::Fill)
+            .build();
+        let weak = Rc::downgrade(ui);
+        button.connect_clicked(move |_| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            ui.session_btn.popdown();
+            if let Some(s) = active(&ui) {
+                for (keycode, pressed) in combo_events(codes) {
+                    send_to(&s, ClientMsg::Key { keycode, pressed });
+                }
+            }
+        });
+        add_session_entry(ui, &button);
+    }
+}
+
+/// Add an entry to the session menu, which shows from its first entry on.
+fn add_session_entry(ui: &App, entry: &impl IsA<gtk::Widget>) {
+    ui.session_list.append(entry);
+    ui.session_btn.set_visible(true);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    #[test]
+    fn a_key_combo_is_held_in_order_and_released_in_reverse() {
+        assert_eq!(
+            combo_events(&[29, 56, 111]),
+            vec![
+                (29, true),
+                (56, true),
+                (111, true),
+                (111, false),
+                (56, false),
+                (29, false)
+            ]
+        );
+        assert!(KEY_COMBOS.iter().all(|(_, codes)| !codes.is_empty()));
+    }
 
     type Input = tokio::sync::mpsc::UnboundedReceiver<clipboard::ToWorker>;
 

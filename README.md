@@ -94,6 +94,14 @@ off it to get your own back. Press `Shift+Esc` to get your shortcuts back
 without moving the pointer. `--release-hotkey` changes that key (`ctrl+alt+q`,
 `double-escape`, or `none`).
 
+**Session menu.** The ⋮ button in the header holds what applies to the shown
+machine. *View only* stops sending your keyboard and pointer, to watch
+without touching anything; the window then leaves the keyboard alone, so
+your own shortcuts keep working with the pointer over the picture. *Send
+keys* sends a shortcut your own desktop would keep for itself: Super,
+Alt+Tab, Shift+Esc, Ctrl+Alt+Delete or Print Screen. Sent keys go out even
+in view only.
+
 **Clipboard.** Copy on one machine and paste on the other. A copy announces
 only its types, and the contents are sent when the other side asks for them,
 normally when you paste. A paste that takes more than a second shows its

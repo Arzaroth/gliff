@@ -3389,6 +3389,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_app_command_survives_the_remote_shell() {
+        assert_eq!(
+            shell_quote("firefox --new-window"),
+            "'firefox --new-window'"
+        );
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+    }
+
+    #[test]
+    fn a_remote_app_opens_through_the_same_server() {
+        let mut target = SshTarget::new("me@box".to_string());
+        target.server_bin = "/opt/gliff-server".into();
+        assert_eq!(
+            remote_app_args(&target, "firefox --new-window"),
+            [
+                "--app",
+                "firefox --new-window",
+                "--server-bin",
+                "/opt/gliff-server",
+                "me@box"
+            ]
+        );
+    }
+
+    #[test]
     fn the_pointer_scrolls_only_near_an_edge() {
         assert_eq!(edge_direction(500.0, 400.0, 1000.0, 800.0), (0.0, 0.0));
         assert_eq!(edge_direction(5.0, 400.0, 1000.0, 800.0), (-1.0, 0.0));

@@ -1035,6 +1035,8 @@ mod tests {
                 "820f8381846444502d31190a001905a01903e86444502d31f5",
             ),
             (ServerMsg::Privacy { enabled: false }, "821081f4"),
+            (ServerMsg::AppTitle { title: "x".into() }, "8211816178"),
+            (ServerMsg::AppClosed, "821280"),
         ];
         for (msg, bytes) in server {
             assert_eq!(hex(&minicbor::to_vec(&msg).unwrap()), bytes, "{msg:?}");

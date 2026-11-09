@@ -88,3 +88,23 @@ fn on_workspace(clients: Vec<hypr_ipc::Client>, workspace: &str) -> Vec<hypr_ipc
         .filter(|c| c.workspace.name == workspace)
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_apps_own_workspace_counts() {
+        let clients: Vec<hypr_ipc::Client> = serde_json::from_str(
+            r#"[
+                {"address": "0x1", "title": "app", "workspace": {"id": -1337, "name": "gliff-app-7"}},
+                {"address": "0x2", "title": "other", "workspace": {"id": 1, "name": "1"}},
+                {"address": "0x3", "title": "else", "workspace": {"id": -1338, "name": "gliff-app-77"}}
+            ]"#,
+        )
+        .unwrap();
+        let ours = on_workspace(clients, "gliff-app-7");
+        assert_eq!(ours.len(), 1);
+        assert_eq!(ours[0].address, "0x1");
+    }
+}

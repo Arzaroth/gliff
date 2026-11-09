@@ -624,4 +624,69 @@ mod tests {
             assert!(cw.is_multiple_of(2) && ch.is_multiple_of(2));
         }
     }
+
+    const NON_LEGACY: &str = "keyword can't work with non-legacy parsers. Use eval.";
+    const LUA_DISPATCH: &str = "error: [string \"return hl.dispatch(exec [workspace...\"]:1: ']' expected near 'name'\n\n Note: dispatch in lua is a shorthand for hl.dispatch(...), your syntax might need to be updated.";
+
+    #[test]
+    fn a_bare_workspace_uses_the_keyword_then_the_lua_rule() {
+        let (result, commands) =
+            against_socket(&["ok"], |i| i.bare_workspace_on("gliff-app-7", "gliff-7"));
+        assert!(result.is_ok());
+        assert_eq!(
+            commands,
+            ["keyword workspace name:gliff-app-7, monitor:gliff-7, gapsout:0, gapsin:0, border:false, rounding:false"]
+        );
+        let (result, commands) = against_socket(&[NON_LEGACY, "ok"], |i| {
+            i.bare_workspace_on("gliff-app-7", "gliff-7")
+        });
+        assert!(result.is_ok());
+        assert_eq!(
+            commands[1],
+            r#"eval hl.workspace_rule({ workspace = "name:gliff-app-7", monitor = "gliff-7", gaps_in = 0, gaps_out = 0, no_border = true, no_rounding = true })"#
+        );
+    }
+
+    #[test]
+    fn an_app_starts_through_exec_then_the_lua_call_with_its_command_quoted() {
+        let (result, commands) = against_socket(&[LUA_DISPATCH, "ok"], |i| {
+            i.exec_on_workspace("gliff-app-7", "foot -T \"a b\"")
+        });
+        assert!(result.is_ok());
+        assert_eq!(
+            commands,
+            [
+                r#"dispatch exec [workspace name:gliff-app-7] foot -T "a b""#,
+                r#"eval hl.exec_cmd("foot -T \"a b\"", { workspace = "name:gliff-app-7" })"#,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_window_closes_by_address() {
+        let (result, commands) = against_socket(&[LUA_DISPATCH, "ok"], |i| i.close_window("0x55"));
+        assert!(result.is_ok());
+        assert_eq!(
+            commands,
+            [
+                "dispatch closewindow address:0x55",
+                r#"dispatch hl.dsp.window.close({ window = "address:0x55" })"#,
+            ]
+        );
+    }
+
+    #[test]
+    fn lua_strings_escape_quotes_backslashes_and_newlines() {
+        assert_eq!(lua_string("a\"b\\c\nd"), r#""a\"b\\c\nd""#);
+    }
+
+    #[test]
+    fn parses_clients_with_their_workspace() {
+        let clients: Vec<Client> = serde_json::from_str(
+            r#"[{"address": "0x1", "title": "t", "class": "foot", "workspace": {"id": -1337, "name": "gliff-app-7"}}]"#,
+        )
+        .unwrap();
+        assert_eq!(clients[0].workspace.name, "gliff-app-7");
+        assert_eq!(clients[0].address, "0x1");
+    }
 }

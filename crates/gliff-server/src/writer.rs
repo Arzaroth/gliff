@@ -331,6 +331,24 @@ mod tests {
     }
 
     #[test]
+    fn app_titles_coalesce_but_the_close_always_waits() {
+        let mut queue = Queue::default();
+        for title in ["a", "b"] {
+            queue.push(
+                ServerMsg::AppTitle {
+                    title: title.into(),
+                },
+                Vec::new(),
+            );
+        }
+        queue.push(ServerMsg::AppClosed, Vec::new());
+        queue.push(ServerMsg::AppClosed, Vec::new());
+        assert_eq!(queue.packets.len(), 3);
+        assert!(matches!(&queue.packets[0].0, ServerMsg::AppTitle { title } if title == "b"));
+        assert!(matches!(queue.packets[2].0, ServerMsg::AppClosed));
+    }
+
+    #[test]
     fn only_the_newest_privacy_report_waits() {
         let mut queue = Queue::default();
         for enabled in [true, false, true] {

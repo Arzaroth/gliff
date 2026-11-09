@@ -153,6 +153,54 @@ impl Instance {
         self.request_json("monitors all")
     }
 
+    pub fn clients(&self) -> Result<Vec<Client>> {
+        self.request_json("clients")
+    }
+
+    /// Pin the named workspace `workspace` to `monitor` with no gaps,
+    /// border or rounding, so its one window fills the monitor. A legacy
+    /// config takes the `workspace` keyword; a Lua config takes
+    /// `hl.workspace_rule` through `eval`.
+    pub fn bare_workspace_on(&self, workspace: &str, monitor: &str) -> Result<()> {
+        let keyword = format!(
+            "keyword workspace name:{workspace}, monitor:{monitor}, gapsout:0, gapsin:0, border:false, rounding:false"
+        );
+        match self.dispatch(&keyword) {
+            Err(Error::Command { response, .. }) if keyword_rejected(&response) => {
+                self.dispatch(&format!(
+                    "eval hl.workspace_rule({{ workspace = \"name:{workspace}\", monitor = \"{monitor}\", gaps_in = 0, gaps_out = 0, no_border = true, no_rounding = true }})"
+                ))
+            }
+            other => other,
+        }
+    }
+
+    /// Start `command` through the compositor's shell onto the named
+    /// workspace `workspace`, which takes the focus. Its first window opens
+    /// fullscreen and opaque, hiding any bar on that monitor.
+    pub fn exec_on_workspace(&self, workspace: &str, command: &str) -> Result<()> {
+        match self.dispatch(&format!(
+            "dispatch exec [workspace name:{workspace}; fullscreen; opaque] {command}"
+        )) {
+            Err(Error::Command { response, .. }) if response.contains("lua") => {
+                self.dispatch(&format!(
+                    "eval hl.exec_cmd({}, {{ workspace = \"name:{workspace}\", fullscreen = true, opaque = true }})",
+                    lua_string(command)
+                ))
+            }
+            other => other,
+        }
+    }
+
+    /// Ask the window at `address` to close, as its close button would.
+    pub fn close_window(&self, address: &str) -> Result<()> {
+        self.dispatcher(
+            &format!("closewindow address:{address}"),
+            &format!("hl.dsp.window.close({{ window = \"address:{address}\" }})"),
+            || true,
+        )
+    }
+
     /// Run a dispatcher. A legacy (hyprlang) config takes `dispatch <name>
     /// <args>`; a Lua config reads `dispatch` as `hl.dispatch(...)`, rejects
     /// that form, and takes the `hl.dsp` call in `lua` instead.
@@ -248,6 +296,39 @@ pub fn clean_mode(width: u32, height: u32, scale: f32) -> (u32, u32) {
     let step = if p.is_multiple_of(2) { p } else { 2 * p };
     let fit = |v: u32| (v - v % step).max(step);
     (fit(width), fit(height))
+}
+
+/// One window, as `clients` lists it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Client {
+    pub address: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub class: String,
+    pub workspace: WorkspaceRef,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WorkspaceRef {
+    pub id: i64,
+    pub name: String,
+}
+
+/// `text` as a Lua string literal.
+fn lua_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for c in text.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -469,5 +550,70 @@ mod tests {
             assert_eq!((f64::from(ch) / f64::from(s)).fract(), 0.0);
             assert!(cw.is_multiple_of(2) && ch.is_multiple_of(2));
         }
+    }
+
+    const NON_LEGACY: &str = "keyword can't work with non-legacy parsers. Use eval.";
+    const LUA_DISPATCH: &str = "error: [string \"return hl.dispatch(exec [workspace...\"]:1: ']' expected near 'name'\n\n Note: dispatch in lua is a shorthand for hl.dispatch(...), your syntax might need to be updated.";
+
+    #[test]
+    fn a_bare_workspace_uses_the_keyword_then_the_lua_rule() {
+        let (result, commands) =
+            against_socket(&["ok"], |i| i.bare_workspace_on("gliff-app-7", "gliff-7"));
+        assert!(result.is_ok());
+        assert_eq!(
+            commands,
+            ["keyword workspace name:gliff-app-7, monitor:gliff-7, gapsout:0, gapsin:0, border:false, rounding:false"]
+        );
+        let (result, commands) = against_socket(&[NON_LEGACY, "ok"], |i| {
+            i.bare_workspace_on("gliff-app-7", "gliff-7")
+        });
+        assert!(result.is_ok());
+        assert_eq!(
+            commands[1],
+            r#"eval hl.workspace_rule({ workspace = "name:gliff-app-7", monitor = "gliff-7", gaps_in = 0, gaps_out = 0, no_border = true, no_rounding = true })"#
+        );
+    }
+
+    #[test]
+    fn an_app_starts_through_exec_then_the_lua_call_with_its_command_quoted() {
+        let (result, commands) = against_socket(&[LUA_DISPATCH, "ok"], |i| {
+            i.exec_on_workspace("gliff-app-7", "foot -T \"a b\"")
+        });
+        assert!(result.is_ok());
+        assert_eq!(
+            commands,
+            [
+                r#"dispatch exec [workspace name:gliff-app-7; fullscreen; opaque] foot -T "a b""#,
+                r#"eval hl.exec_cmd("foot -T \"a b\"", { workspace = "name:gliff-app-7", fullscreen = true, opaque = true })"#,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_window_closes_by_address() {
+        let (result, commands) = against_socket(&[LUA_DISPATCH, "ok"], |i| i.close_window("0x55"));
+        assert!(result.is_ok());
+        assert_eq!(
+            commands,
+            [
+                "dispatch closewindow address:0x55",
+                r#"dispatch hl.dsp.window.close({ window = "address:0x55" })"#,
+            ]
+        );
+    }
+
+    #[test]
+    fn lua_strings_escape_quotes_backslashes_and_newlines() {
+        assert_eq!(lua_string("a\"b\\c\nd"), r#""a\"b\\c\nd""#);
+    }
+
+    #[test]
+    fn parses_clients_with_their_workspace() {
+        let clients: Vec<Client> = serde_json::from_str(
+            r#"[{"address": "0x1", "title": "t", "class": "foot", "workspace": {"id": -1337, "name": "gliff-app-7"}}]"#,
+        )
+        .unwrap();
+        assert_eq!(clients[0].workspace.name, "gliff-app-7");
+        assert_eq!(clients[0].address, "0x1");
     }
 }

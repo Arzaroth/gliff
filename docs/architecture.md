@@ -259,6 +259,17 @@ Every crate with `unsafe` documents the safety requirements at each block.
   `org.freedesktop.Notifications`. Cancel drops the fetch, which sends
   `Abort`. A failed paste is always reported, however short.
 
+- **Screen selection.** A server that listed the `outputs` feature sends
+  `Outputs` (the enabled monitors, the one shown, whether it can switch)
+  when the session starts and on `ClientMsg::ListOutputs`. `SelectOutput`
+  starts capture and input threads on the named monitor, then ends the old
+  ones, refits the stream to the window and restarts it from a keyframe.
+  The new capture gets a channel of its own, so frames and stops queued by
+  the old one never reach the session, and a static screen that sends no
+  first frame is recaptured with full damage after 700 ms, as at the
+  start. The writer keeps only the newest queued `Outputs`. A headless
+  session lists only its own screen and refuses to switch.
+
 ## Measurements
 
 On an AMD Radeon RX 7600 (RADV for compute, radeonsi for the codec, Mesa
@@ -348,7 +359,7 @@ Not yet built, roughly in priority order:
    answered with a fresh keyframe rather than a retransmit. `LinkEstimator`,
    `RateController` and the ladder already take transport-neutral inputs
    (bytes sent, acks, a blocked marker) and carry over unchanged.
-4. **Polish**: multi-output selection UI, a `--max-fps` server flag, and a
+4. **Polish**: a `--max-fps` server flag, and a
    lazy file spool (a FUSE mount the pasting application
    reads through, so its own copy dialog shows progress, instead of
    spooling every file before the URI list is handed over).

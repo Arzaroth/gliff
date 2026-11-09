@@ -108,6 +108,13 @@ pub enum Status {
     /// The two ends speak different protocol versions, so retrying cannot
     /// help.
     Incompatible(String),
+    /// The remote's screens and the one shown; `selectable` is false when
+    /// the session cannot switch.
+    Outputs {
+        outputs: Vec<gliff_proto::OutputInfo>,
+        current: String,
+        selectable: bool,
+    },
     Closed,
 }
 
@@ -900,6 +907,17 @@ where
                 anyhow::bail!("server error {code}: {message}")
             }
             ServerMsg::HelloAck { .. } => {}
+            ServerMsg::Outputs {
+                outputs,
+                current,
+                selectable,
+            } => {
+                let _ = status.send(Status::Outputs {
+                    outputs,
+                    current,
+                    selectable,
+                });
+            }
             other => {
                 if let Ok(clip) = other.into_clipboard() {
                     let payload = match &clip {

@@ -338,6 +338,23 @@ Every crate with `unsafe` documents the safety requirements at each block.
   timer scrolls while the pointer rests within 32 px of a viewport edge
   and resends the pointer, since the content moves under it.
 
+- **Remote apps.** `gliff-server --app COMMAND` is a headless session
+  around one app. Before streaming, the server pins a workspace named
+  `gliff-app-<pid>` to its headless output with no gaps, border or
+  rounding (`Instance::bare_workspace_on`) and starts the command onto it
+  through the compositor's shell (`exec_on_workspace`), so the app's
+  window fills the screen and its popups render inside it. Every 500 ms
+  it lists the windows on that workspace: a title change goes to the
+  client as `AppTitle`, and once a window has existed and none is left
+  (or none opened within 30 s) it sends `AppClosed`, stops encoding, lets
+  the writer flush for at most a second and ends. Ending the session any
+  other way first closes the app's windows through `close_window`. Every
+  hyprctl call takes the legacy form first and the Lua one (`eval
+  hl.workspace_rule`, `eval hl.exec_cmd`, `hl.dsp.window.close`) when a
+  Lua config refuses it. The client's `--app` passes the command
+  shell-quoted, since ssh joins its arguments into one remote command
+  line, shows no tabs, remembers nothing and never reconnects by itself.
+
 - **Privacy mode.** A server that listed the `privacy` feature answers
   `ClientMsg::Privacy` with `ServerMsg::Privacy` carrying the outcome. On a
   headless session it opens a Wayland connection of its own and gives

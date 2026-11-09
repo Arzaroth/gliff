@@ -264,9 +264,26 @@ where
         cursor_shape_id: 0,
     };
 
+    let lock_supported = session
+        .caps
+        .features
+        .iter()
+        .any(|feature| feature == gliff_proto::FEATURE_LOCK);
+    let mut lock_on_end = crate::lock::LockOnEnd::default();
     loop {
         let flow = tokio::select! {
             msg = msg_rx.recv() => match msg {
+                Some(Inbound::Msg(ClientMsg::LockScreen)) => {
+                    if lock_supported {
+                        crate::lock::lock();
+                    }
+                    ControlFlow::Continue(())
+                }
+                Some(Inbound::Msg(ClientMsg::LockOnDisconnect { enabled })) => {
+                    lock_on_end.armed = enabled && lock_supported;
+                    tracing::info!(enabled = lock_on_end.armed, "lock on disconnect");
+                    ControlFlow::Continue(())
+                }
                 Some(Inbound::Msg(msg)) => session.on_client_msg(msg).await?,
                 Some(Inbound::Clipboard(msg, payload)) => {
                     clipboard.on_peer_msg(msg, payload);
@@ -623,6 +640,7 @@ impl Session {
                 self.inject(InputCmd::SetKeymap(keymap))
             }
             ClientMsg::Keymap { .. } => {}
+            ClientMsg::LockScreen | ClientMsg::LockOnDisconnect { .. } => {}
             ClientMsg::Hello { .. } => anyhow::bail!("unexpected second Hello"),
         }
         Ok(ControlFlow::Continue(()))

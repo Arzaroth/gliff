@@ -34,7 +34,11 @@ pub const PROTOCOL_VERSION: u16 = 1;
 
 /// Optional behaviours this build supports, exchanged in the handshake. A
 /// behaviour is used only when both ends list it.
-pub const FEATURES: &[&str] = &[];
+pub const FEATURES: &[&str] = &[FEATURE_LOCK];
+
+/// Locking the remote's screen: `ClientMsg::LockScreen` locks it now, and
+/// `LockOnDisconnect` has the server lock it when the connection ends.
+pub const FEATURE_LOCK: &str = "lock";
 
 pub fn features() -> Vec<String> {
     FEATURES.iter().map(|f| f.to_string()).collect()
@@ -298,6 +302,17 @@ pub enum ClientMsg {
     Pong {
         #[n(0)]
         t: u64,
+    },
+    /// Lock the remote's screen now. Sent only to a server that listed
+    /// [`FEATURE_LOCK`].
+    #[n(23)]
+    LockScreen,
+    /// Lock the remote's screen when this connection ends, or not; off
+    /// until the client says otherwise.
+    #[n(24)]
+    LockOnDisconnect {
+        #[n(0)]
+        enabled: bool,
     },
 }
 
@@ -720,6 +735,8 @@ mod tests {
                 "820682182a1903e8",
             ),
             (ClientMsg::RequestKeyframe, "820780"),
+            (ClientMsg::LockScreen, "821780"),
+            (ClientMsg::LockOnDisconnect { enabled: true }, "82181881f5"),
         ];
         for (msg, bytes) in client {
             assert_eq!(hex(&minicbor::to_vec(&msg).unwrap()), bytes, "{msg:?}");

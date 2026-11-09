@@ -126,6 +126,9 @@ struct App {
     /// Picks the remote screen the shown session mirrors.
     screen_btn: gtk::MenuButton,
     screen_list: gtk::Box,
+    /// With all screens shown, the session under the pointer, which gets
+    /// keyboard and pointer input.
+    target: RefCell<Option<Rc<Session>>>,
     /// Evdev codes currently held on the remote, so they can all be released
     /// when the keyboard is handed back to the local compositor.
     pressed_keys: RefCell<BTreeSet<u32>>,
@@ -167,6 +170,15 @@ struct Session {
     outputs: RefCell<Vec<gliff_proto::OutputInfo>>,
     current_output: RefCell<String>,
     outputs_selectable: Cell<bool>,
+    /// The screen this session keeps showing: it is selected again whenever
+    /// the server shows another, as after a reconnect.
+    pinned_output: RefCell<Option<String>>,
+    /// With all screens shown: each screen's name and place in the remote's
+    /// layout, and the extra sessions showing the screens this one does not.
+    panes: RefCell<Vec<(String, paintable::Rect)>>,
+    members: RefCell<Vec<Rc<Session>>>,
+    /// An extra session of another tab's machine; it has no tab.
+    member: Cell<bool>,
     /// The server streams a dedicated headless output: its frames carry the
     /// compositor-drawn cursor, so the local pointer is hidden over the video.
     headless: Cell<bool>,
@@ -216,6 +228,10 @@ impl Session {
             outputs: RefCell::new(Vec::new()),
             current_output: RefCell::new(String::new()),
             outputs_selectable: Cell::new(false),
+            pinned_output: RefCell::new(None),
+            panes: RefCell::new(Vec::new()),
+            members: RefCell::new(Vec::new()),
+            member: Cell::new(false),
             headless: Cell::new(false),
             stream_size: Cell::new((0, 0)),
             stream_view: Cell::new((0, 0)),
@@ -441,6 +457,7 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
         view_scale: Cell::new(1.0),
         screen_btn: screen_btn.clone(),
         screen_list,
+        target: RefCell::new(None),
         pressed_keys: RefCell::new(BTreeSet::new()),
         released: Cell::new(false),
         config_path: Config::default_path(),
@@ -1004,10 +1021,8 @@ fn show_session(ui: &Rc<App>, s: &Rc<Session>) {
     ui.window.set_title(Some(&window_title(&s.endpoint)));
     show_status(ui, &s.status.borrow());
     ui.stats.set_text(&s.stats.borrow());
-    match &*s.last_frame.borrow() {
-        Some((texture, view)) => ui.frame.set_frame(texture.clone(), device_scale(ui), *view),
-        None => ui.frame.clear(),
-    }
+    ui.target.borrow_mut().take();
+    show_pictures(ui);
     ui.video.set_cursor(s.cursor.borrow().as_ref());
     // A background session kept the size the window had when it was last
     // shown.
@@ -1020,6 +1035,7 @@ fn show_session(ui: &Rc<App>, s: &Rc<Session>) {
 fn show_nothing(ui: &Rc<App>) {
     release_pressed_keys(ui);
     let previous = ui.active.take();
+    ui.target.borrow_mut().take();
     revoke_local_offer(previous.as_ref(), ui.cli.no_clipboard);
     ui.window.set_title(Some("Gliff"));
     show_status(ui, "Not connected");
@@ -1039,6 +1055,7 @@ fn stop_session(ui: &Rc<App>, name: &str) {
     if was_active {
         release_pressed_keys(ui);
     }
+    leave_all_screens(ui, &s);
     // Bumping the generation stops its pollers and pending reconnects, and
     // dropping the sender closes the worker's input, which ends it.
     s.generation.set(s.generation.get() + 1);
@@ -1140,7 +1157,9 @@ fn show_disconnected(ui: &Rc<App>, s: &Rc<Session>) {
     s.outputs.borrow_mut().clear();
     ui.transfers.clear_connection(s.conn.get());
     set_stats(ui, s, "");
-    if is_active(ui, s) {
+    if all_screens(ui).is_some() {
+        show_frame(ui, s, None, (0, 0));
+    } else if is_active(ui, s) {
         ui.frame.clear();
         ui.video.set_cursor(None);
     }
@@ -1281,10 +1300,7 @@ fn poll_frames(ui: Rc<App>, s: Rc<Session>, rx: Receiver<Picture>, generation: u
                     s.stream_size.set(p.stream);
                     s.stream_view.set(p.view);
                     s.stream_scale.set((p.scale_milli.max(1) as f32) / 1000.0);
-                    if is_active(&ui, &s) {
-                        ui.frame
-                            .set_frame(texture.clone(), device_scale(&ui), p.view);
-                    }
+                    show_frame(&ui, &s, Some(texture.clone()), p.view);
                     *s.last_frame.borrow_mut() = Some((texture, p.view));
                 }
                 Err(e) => tracing::warn!(error = %e, "frame texture import failed"),
@@ -1292,6 +1308,43 @@ fn poll_frames(ui: Rc<App>, s: Rc<Session>, rx: Receiver<Picture>, generation: u
         }
         glib::ControlFlow::Continue
     });
+}
+
+/// Paint a session's frame where the window shows it: its pane when all
+/// screens are shown, else the whole picture when it is the active session.
+/// `None` clears it. A session not yet on its pinned screen paints nothing.
+fn show_frame(ui: &App, s: &Session, texture: Option<gdk::Texture>, view: (u32, u32)) {
+    if let Some(primary) = all_screens(ui) {
+        let on_pin =
+            s.pinned_output.borrow().as_deref() == Some(s.current_output.borrow().as_str());
+        if let Some(index) = pane_index(&primary, s) {
+            if on_pin || texture.is_none() {
+                ui.frame.set_pane_frame(index, texture, view);
+            }
+        }
+        return;
+    }
+    if active(ui).is_some_and(|a| std::ptr::eq(Rc::as_ptr(&a), s)) {
+        match texture {
+            Some(t) => ui.frame.set_frame(t, device_scale(ui), view),
+            None => ui.frame.clear(),
+        }
+    }
+}
+
+/// Show the active session's picture, or all its screens' panes.
+fn show_pictures(ui: &App) {
+    ui.frame.clear();
+    let Some(s) = active(ui) else {
+        return;
+    };
+    let places: Vec<paintable::Rect> = s.panes.borrow().iter().map(|(_, r)| *r).collect();
+    ui.frame.set_panes(&places);
+    for shown in shown_sessions(ui) {
+        if let Some((texture, view)) = &*shown.last_frame.borrow() {
+            show_frame(ui, &shown, Some(texture.clone()), *view);
+        }
+    }
 }
 
 /// Wrap a decoded frame as a GDK texture: a dmabuf import for the GPU tier,
@@ -1369,19 +1422,21 @@ fn poll_status(ui: Rc<App>, s: Rc<Session>, rx: Receiver<Status>, generation: u6
                     set_status(&ui, &s, "");
                     // Visible before the first per-second stats arrive.
                     set_stats(&ui, &s, &video);
-                    remember_machine(&ui, &s);
+                    if !s.member.get() {
+                        remember_machine(&ui, &s);
+                    }
                     // A fresh server starts at its own default size; a
                     // reconnect must bring it back to the window. The gate
                     // compares against the view, so a server-chosen
                     // reduced-resolution stream never triggers one. A
                     // background session is resized when it is shown.
-                    if is_active(&ui, &s) {
+                    if shown_sessions(&ui).iter().any(|o| Rc::ptr_eq(o, &s)) {
                         request_resize(&ui);
-                        if headless && s.cursor.borrow().is_none() {
-                            let cursor = hidden_cursor();
-                            ui.video.set_cursor(Some(&cursor));
-                            *s.cursor.borrow_mut() = Some(cursor);
-                        }
+                    }
+                    if is_active(&ui, &s) && headless && s.cursor.borrow().is_none() {
+                        let cursor = hidden_cursor();
+                        ui.video.set_cursor(Some(&cursor));
+                        *s.cursor.borrow_mut() = Some(cursor);
                     }
                 }
                 Status::Stats {
@@ -1483,6 +1538,12 @@ fn poll_status(ui: Rc<App>, s: Rc<Session>, rx: Receiver<Status>, generation: u6
                     *s.outputs.borrow_mut() = outputs;
                     *s.current_output.borrow_mut() = current;
                     s.outputs_selectable.set(selectable);
+                    let pinned = s.pinned_output.borrow().clone();
+                    if let Some(pinned) =
+                        pinned.filter(|p| selectable && *p != *s.current_output.borrow())
+                    {
+                        send_to(&s, ClientMsg::SelectOutput { name: pinned });
+                    }
                     if is_active(&ui, &s) {
                         refresh_screens(&ui);
                     }
@@ -1506,7 +1567,7 @@ fn poll_status(ui: Rc<App>, s: Rc<Session>, rx: Receiver<Status>, generation: u6
 /// carry the compositor-drawn cursor and would show two pointers.
 fn set_remote_cursor(ui: &App, s: &Rc<Session>, image: CursorImage) {
     let cursor = remote_cursor(image).or_else(|| s.headless.get().then(hidden_cursor));
-    if is_active(ui, s) {
+    if target(ui).is_some_and(|t| Rc::ptr_eq(&t, s)) {
         ui.video.set_cursor(cursor.as_ref());
     }
     *s.cursor.borrow_mut() = cursor;
@@ -1579,7 +1640,7 @@ fn has_visible_shape(argb: &[u8]) -> bool {
 /// (a reduced-resolution stream is stretched to the view box), then divide
 /// by the remote scale, which is what the virtual pointer expects.
 fn to_remote(ui: &App, x: f64, y: f64) -> (f64, f64) {
-    let Some(s) = active(ui) else {
+    let Some(s) = target(ui) else {
         return (0.0, 0.0);
     };
     let (rw, rh) = s.stream_size.get();
@@ -1588,12 +1649,12 @@ fn to_remote(ui: &App, x: f64, y: f64) -> (f64, f64) {
         return (0.0, 0.0);
     }
     let device = device_scale(ui);
-    let (aw, ah) = (ui.video.width() as f64, ui.video.height() as f64);
-    let Some(l) = paintable::layout((vw, vh), device, aw, ah) else {
+    let area = view_area(ui, &s);
+    let Some(l) = paintable::layout((vw, vh), device, area.width, area.height) else {
         return (0.0, 0.0);
     };
-    let vx = (x - l.x) / l.factor * device;
-    let vy = (y - l.y) / l.factor * device;
+    let vx = (x - area.x - l.x) / l.factor * device;
+    let vy = (y - area.y - l.y) / l.factor * device;
     let px = (vx * rw as f64 / vw as f64).clamp(0.0, rw as f64);
     let py = (vy * rh as f64 / vh as f64).clamp(0.0, rh as f64);
     let scale = s.stream_scale.get().max(0.01) as f64;
@@ -1601,8 +1662,117 @@ fn to_remote(ui: &App, x: f64, y: f64) -> (f64, f64) {
 }
 
 fn send(ui: &App, msg: ClientMsg) {
-    if let Some(s) = active(ui) {
+    if let Some(s) = target(ui) {
         send_to(&s, msg);
+    }
+}
+
+/// The session that keyboard and pointer input go to: with all screens
+/// shown, the one under the pointer.
+fn target(ui: &App) -> Option<Rc<Session>> {
+    let shown = shown_sessions(ui);
+    ui.target
+        .borrow()
+        .clone()
+        .filter(|t| shown.iter().any(|s| Rc::ptr_eq(s, t)))
+        .or_else(|| active(ui))
+}
+
+/// The sessions whose pictures the window shows.
+fn shown_sessions(ui: &App) -> Vec<Rc<Session>> {
+    let Some(s) = active(ui) else {
+        return Vec::new();
+    };
+    let mut shown = vec![s.clone()];
+    shown.extend(s.members.borrow().iter().cloned());
+    shown
+}
+
+/// The active session when it shows all screens.
+fn all_screens(ui: &App) -> Option<Rc<Session>> {
+    active(ui).filter(|s| !s.panes.borrow().is_empty())
+}
+
+/// The pane of `primary`'s screens that shows session `s`.
+fn pane_index(primary: &Rc<Session>, s: &Session) -> Option<usize> {
+    let ours = std::ptr::eq(Rc::as_ptr(primary), s)
+        || primary
+            .members
+            .borrow()
+            .iter()
+            .any(|m| std::ptr::eq(Rc::as_ptr(m), s));
+    if !ours {
+        return None;
+    }
+    let pinned = s.pinned_output.borrow();
+    let pinned = pinned.as_deref()?;
+    primary
+        .panes
+        .borrow()
+        .iter()
+        .position(|(name, _)| name == pinned)
+}
+
+fn pane_areas(ui: &App, primary: &Session) -> Vec<paintable::Rect> {
+    let places: Vec<paintable::Rect> = primary.panes.borrow().iter().map(|(_, r)| *r).collect();
+    paintable::arrange(&places, ui.video.width() as f64, ui.video.height() as f64)
+}
+
+/// With all screens shown, send input to the session under the pointer;
+/// keys held on the previous one are released first.
+fn retarget(ui: &App, x: f64, y: f64) {
+    let Some(primary) = all_screens(ui) else {
+        return;
+    };
+    let Some(index) = pane_areas(ui, &primary)
+        .iter()
+        .position(|a| x >= a.x && x < a.x + a.width && y >= a.y && y < a.y + a.height)
+    else {
+        return;
+    };
+    let name = primary.panes.borrow()[index].0.clone();
+    let next = std::iter::once(primary.clone())
+        .chain(primary.members.borrow().iter().cloned())
+        .find(|s| s.pinned_output.borrow().as_deref() == Some(name.as_str()));
+    let Some(next) = next else {
+        return;
+    };
+    if target(ui).is_some_and(|t| Rc::ptr_eq(&t, &next)) {
+        return;
+    }
+    release_pressed_keys(ui);
+    ui.video.set_cursor(next.cursor.borrow().as_ref());
+    *ui.target.borrow_mut() = Some(next);
+}
+
+/// Where a session's picture is drawn in the video widget, in logical
+/// pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Area {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+fn view_area(ui: &App, s: &Session) -> Area {
+    if let Some(primary) = all_screens(ui) {
+        if let Some(a) =
+            pane_index(&primary, s).and_then(|i| pane_areas(ui, &primary).get(i).copied())
+        {
+            return Area {
+                x: a.x,
+                y: a.y,
+                width: a.width,
+                height: a.height,
+            };
+        }
+    }
+    Area {
+        x: 0.0,
+        y: 0.0,
+        width: ui.video.width() as f64,
+        height: ui.video.height() as f64,
     }
 }
 
@@ -1909,6 +2079,7 @@ fn install_input_handlers(
     {
         let ui = ui.clone();
         motion.connect_motion(move |_, x, y| {
+            retarget(&ui, x, y);
             let (rx, ry) = to_remote(&ui, x, y);
             send(&ui, ClientMsg::PointerMotion { x: rx, y: ry });
         });
@@ -2207,16 +2378,19 @@ fn install_resize_handler(ui: &Rc<App>) {
 /// differs from the last request. The view comes from the latest
 /// StreamConfig, falling back to the last painted frame.
 fn request_zoom(ui: &App) {
-    let Some(s) = active(ui) else {
-        return;
-    };
+    for s in shown_sessions(ui) {
+        request_session_zoom(ui, &s);
+    }
+}
+
+fn request_session_zoom(ui: &App, s: &Session) {
     let mut view = s.server_view.get();
     if view == (0, 0) {
         view = s.stream_view.get();
     }
     let device = device_scale(ui);
-    let (aw, ah) = (ui.video.width() as f64, ui.video.height() as f64);
-    let want = paintable::layout(view, device, aw, ah).map_or(1, |l| l.zoom());
+    let area = view_area(ui, s);
+    let want = paintable::layout(view, device, area.width, area.height).map_or(1, |l| l.zoom());
     if want == s.zoom.get() {
         return;
     }
@@ -2232,11 +2406,18 @@ fn request_zoom(ui: &App) {
 /// chose to send at reduced resolution is not a size mismatch, and asking
 /// again would fight the server's own choice.
 fn request_resize(ui: &App) {
-    let Some(s) = active(ui) else {
-        return;
-    };
-    let size = ui.view_size.get();
+    for s in shown_sessions(ui) {
+        request_session_resize(ui, &s);
+    }
+}
+
+fn request_session_resize(ui: &App, s: &Session) {
     let scale = device_scale(ui);
+    let area = view_area(ui, s);
+    let size = (
+        (area.width * scale).max(0.0).round() as u32 & !1,
+        (area.height * scale).max(0.0).round() as u32 & !1,
+    );
     if size.0 < 64
         || size.1 < 64
         || (s.resize_scale.get() == scale
@@ -2247,7 +2428,7 @@ fn request_resize(ui: &App) {
     s.resize_requested.set(size);
     s.resize_scale.set(scale);
     send_to(
-        &s,
+        s,
         ClientMsg::Resize {
             width: size.0,
             height: size.1,
@@ -2287,7 +2468,9 @@ fn install_screen_menu(ui: &Rc<App>) {
         let Some(ui) = weak.upgrade() else {
             return;
         };
-        send(&ui, ClientMsg::ListOutputs);
+        if let Some(s) = active(&ui) {
+            send_to(&s, ClientMsg::ListOutputs);
+        }
     });
 }
 /// Show the screen menu for the shown session when it has screens to pick
@@ -2306,10 +2489,37 @@ fn refresh_screens(ui: &Rc<App>) {
         return;
     };
     let current = s.current_output.borrow().clone();
+    let showing_all = !s.panes.borrow().is_empty();
+    let all = gtk::Box::builder().spacing(8).build();
+    let check = gtk::Image::from_icon_name("object-select-symbolic");
+    check.set_opacity(if showing_all { 1.0 } else { 0.0 });
+    all.append(&check);
+    all.append(&gtk::Label::new(Some("All screens")));
+    let all = gtk::Button::builder().child(&all).has_frame(false).build();
+    let weak = Rc::downgrade(ui);
+    all.connect_clicked(move |_| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        ui.screen_btn.popdown();
+        let Some(s) = active(&ui) else {
+            return;
+        };
+        if s.panes.borrow().is_empty() {
+            enter_all_screens(&ui, &s);
+        } else {
+            leave_all_screens(&ui, &s);
+        }
+    });
+    ui.screen_list.append(&all);
     for output in outputs {
         let row = gtk::Box::builder().spacing(8).build();
         let check = gtk::Image::from_icon_name("object-select-symbolic");
-        check.set_opacity(if output.name == current { 1.0 } else { 0.0 });
+        check.set_opacity(if !showing_all && output.name == current {
+            1.0
+        } else {
+            0.0
+        });
         row.append(&check);
         row.append(&gtk::Label::new(Some(&format!(
             "{}  {}×{}",
@@ -2323,15 +2533,140 @@ fn refresh_screens(ui: &Rc<App>) {
                 return;
             };
             ui.screen_btn.popdown();
-            send(&ui, ClientMsg::SelectOutput { name: name.clone() });
+            if let Some(s) = active(&ui) {
+                leave_all_screens(&ui, &s);
+                send_to(&s, ClientMsg::SelectOutput { name: name.clone() });
+            }
         });
         ui.screen_list.append(&button);
     }
 }
 
+/// Show every screen of `s`'s machine at once, at their places in the
+/// remote's layout: `s` keeps its screen, and an extra session pinned to
+/// each other screen joins it. The clipboard stays with `s`.
+fn enter_all_screens(ui: &Rc<App>, s: &Rc<Session>) {
+    let outputs = s.outputs.borrow().clone();
+    let current = s.current_output.borrow().clone();
+    if outputs.len() < 2 || !s.panes.borrow().is_empty() {
+        return;
+    }
+    tracing::info!(machine = %s.name, screens = outputs.len(), "showing all screens");
+    *s.pinned_output.borrow_mut() = Some(current.clone());
+    *s.panes.borrow_mut() = screen_places(&outputs);
+    for output in outputs.iter().filter(|o| o.name != current) {
+        let member = Rc::new(Session::new(s.endpoint.clone()));
+        member.member.set(true);
+        *member.pinned_output.borrow_mut() = Some(output.name.clone());
+        s.members.borrow_mut().push(member.clone());
+        start_session(ui.clone(), member);
+    }
+    if is_active(ui, s) {
+        show_pictures(ui);
+        request_resize(ui);
+        request_zoom(ui);
+        refresh_screens(ui);
+    }
+}
+/// Go back to showing only `s`'s own screen, ending its extra sessions.
+fn leave_all_screens(ui: &Rc<App>, s: &Rc<Session>) {
+    if s.panes.borrow().is_empty() {
+        return;
+    }
+    if target(ui).is_some_and(|t| !Rc::ptr_eq(&t, s)) {
+        release_pressed_keys(ui);
+    }
+    for member in s.members.borrow_mut().drain(..) {
+        member.generation.set(member.generation.get() + 1);
+        member.input_tx.borrow_mut().take();
+        ui.transfers.clear_connection(member.conn.get());
+    }
+    s.panes.borrow_mut().clear();
+    s.pinned_output.borrow_mut().take();
+    ui.target.borrow_mut().take();
+    if is_active(ui, s) {
+        show_pictures(ui);
+        ui.video.set_cursor(s.cursor.borrow().as_ref());
+        request_resize(ui);
+        request_zoom(ui);
+        refresh_screens(ui);
+    }
+}
+/// Each screen's name and place in the remote's logical layout. Without
+/// positions from the server, the screens stand in a row.
+fn screen_places(outputs: &[gliff_proto::OutputInfo]) -> Vec<(String, paintable::Rect)> {
+    let positioned = outputs.iter().all(|o| o.x.is_some() && o.y.is_some());
+    let mut next_x = 0.0;
+    outputs
+        .iter()
+        .map(|o| {
+            let scale = (o.scale_milli.max(1) as f64) / 1000.0;
+            let (width, height) = (o.width as f64 / scale, o.height as f64 / scale);
+            let (x, y) = if positioned {
+                (o.x.unwrap_or(0) as f64, o.y.unwrap_or(0) as f64)
+            } else {
+                (next_x, 0.0)
+            };
+            next_x += width;
+            (
+                o.name.clone(),
+                paintable::Rect {
+                    x,
+                    y,
+                    width,
+                    height,
+                },
+            )
+        })
+        .collect()
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn output(
+        name: &str,
+        size: (u32, u32),
+        scale_milli: u32,
+        at: Option<(i32, i32)>,
+    ) -> gliff_proto::OutputInfo {
+        gliff_proto::OutputInfo {
+            name: name.into(),
+            width: size.0,
+            height: size.1,
+            scale_milli,
+            x: at.map(|a| a.0),
+            y: at.map(|a| a.1),
+        }
+    }
+
+    #[test]
+    fn screens_stand_where_the_server_puts_them_at_their_logical_size() {
+        let places = screen_places(&[
+            output("DP-2", (2560, 1440), 1000, Some((0, 0))),
+            output("eDP-1", (2256, 1504), 2000, Some((2560, 180))),
+        ]);
+        assert_eq!(places[0].0, "DP-2");
+        assert_eq!(
+            places[1].1,
+            paintable::Rect {
+                x: 2560.0,
+                y: 180.0,
+                width: 1128.0,
+                height: 752.0
+            }
+        );
+    }
+
+    #[test]
+    fn screens_without_positions_stand_in_a_row() {
+        let places = screen_places(&[
+            output("DP-1", (2560, 1440), 1000, None),
+            output("DP-2", (1920, 1080), 1000, Some((9, 9))),
+        ]);
+        assert_eq!((places[0].1.x, places[0].1.y), (0.0, 0.0));
+        assert_eq!((places[1].1.x, places[1].1.y), (2560.0, 0.0));
+    }
     use std::cell::RefCell;
 
     type Input = tokio::sync::mpsc::UnboundedReceiver<clipboard::ToWorker>;

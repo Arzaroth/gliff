@@ -83,6 +83,12 @@ header lists them and switches the mirrored one without reconnecting. The
 list is read again each time the menu opens, so it shows screens plugged in
 since. A private screen cannot be switched.
 
+**All screens** in the same menu shows every screen at once, laid out as
+they stand on the remote machine. Each extra screen is a connection of its
+own (one more ssh session per screen), so each keeps full sharpness and its
+own adaptation to the link. Keyboard and pointer go to the screen under the
+pointer. The clipboard stays with the tab's own connection. Picking a single screen goes back to one.
+
 Every machine you connect to gets a tab in the title bar. Click a tab to
 connect to that machine, or to switch to it: each connection keeps running
 while you look at another, so switching is instant. Hover a tab for its

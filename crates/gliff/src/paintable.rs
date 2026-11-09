@@ -70,8 +70,56 @@ pub fn layout(view: (u32, u32), device: f64, width: f64, height: f64) -> Option<
     })
 }
 
+/// A rectangle in logical pixels: a remote screen's place in the remote's
+/// layout, or a pane's place in the widget.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Fit remote screens, kept at their places in the remote's layout, into a
+/// widget of `width` x `height`, centred and in proportion. Returns each
+/// screen's pane in widget coordinates, in the same order.
+pub fn arrange(screens: &[Rect], width: f64, height: f64) -> Vec<Rect> {
+    let left = screens.iter().map(|r| r.x).fold(f64::INFINITY, f64::min);
+    let top = screens.iter().map(|r| r.y).fold(f64::INFINITY, f64::min);
+    let right = screens
+        .iter()
+        .map(|r| r.x + r.width)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let bottom = screens
+        .iter()
+        .map(|r| r.y + r.height)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let (bw, bh) = (right - left, bottom - top);
+    if screens.is_empty() || bw <= 0.0 || bh <= 0.0 || width <= 0.0 || height <= 0.0 {
+        return Vec::new();
+    }
+    let fit = (width / bw).min(height / bh);
+    let (ox, oy) = ((width - bw * fit) / 2.0, (height - bh * fit) / 2.0);
+    screens
+        .iter()
+        .map(|r| Rect {
+            x: ox + (r.x - left) * fit,
+            y: oy + (r.y - top) * fit,
+            width: r.width * fit,
+            height: r.height * fit,
+        })
+        .collect()
+}
+
 mod imp {
     use super::*;
+
+    /// One remote screen of several drawn side by side.
+    pub struct Pane {
+        pub place: Rect,
+        pub texture: Option<gdk::Texture>,
+        pub view: (u32, u32),
+    }
 
     #[derive(Default)]
     pub struct FramePaintable {
@@ -80,10 +128,26 @@ mod imp {
         /// The full-quality fit size in device pixels; the texture is
         /// stretched to it when the stream is scaled down.
         pub view: Cell<(u32, u32)>,
+        /// Several screens at once, drawn instead of the single texture
+        /// when not empty.
+        pub panes: RefCell<Vec<Pane>>,
     }
 
     impl FramePaintable {
         fn view_or_texture(&self) -> (i32, i32) {
+            let panes = self.panes.borrow();
+            if !panes.is_empty() {
+                let device = self.scale.get();
+                let places: Vec<Rect> = panes.iter().map(|p| p.place).collect();
+                let right = places.iter().map(|r| r.x + r.width).fold(0.0, f64::max);
+                let bottom = places.iter().map(|r| r.y + r.height).fold(0.0, f64::max);
+                let left = places.iter().map(|r| r.x).fold(f64::INFINITY, f64::min);
+                let top = places.iter().map(|r| r.y).fold(f64::INFINITY, f64::min);
+                return (
+                    ((right - left) * device).round() as i32,
+                    ((bottom - top) * device).round() as i32,
+                );
+            }
             let (vw, vh) = self.view.get();
             if vw > 0 && vh > 0 {
                 return (vw as i32, vh as i32);
@@ -122,6 +186,27 @@ mod imp {
         }
 
         fn snapshot(&self, snapshot: &gdk::Snapshot, width: f64, height: f64) {
+            let panes = self.panes.borrow();
+            if !panes.is_empty() {
+                let places: Vec<Rect> = panes.iter().map(|p| p.place).collect();
+                for (pane, area) in panes.iter().zip(arrange(&places, width, height)) {
+                    let Some(t) = &pane.texture else {
+                        continue;
+                    };
+                    let Some(l) = layout(pane.view, self.scale.get(), area.width, area.height)
+                    else {
+                        continue;
+                    };
+                    let bounds = graphene::Rect::new(
+                        (area.x + l.x) as f32,
+                        (area.y + l.y) as f32,
+                        l.width as f32,
+                        l.height as f32,
+                    );
+                    snapshot.append_texture(t, &bounds);
+                }
+                return;
+            }
             let Some(t) = self.texture.borrow().clone() else {
                 return;
             };
@@ -174,10 +259,39 @@ impl FramePaintable {
         }
     }
 
+    /// Draw one pane per remote screen, at the screens' places in the
+    /// remote's layout, instead of the single frame; an empty list goes back
+    /// to the single frame.
+    pub fn set_panes(&self, places: &[Rect]) {
+        *self.imp().panes.borrow_mut() = places
+            .iter()
+            .map(|&place| imp::Pane {
+                place,
+                texture: None,
+                view: (0, 0),
+            })
+            .collect();
+        self.invalidate_size();
+        self.invalidate_contents();
+    }
+
+    /// Show `texture` in pane `index`, inside a `view`-sized area.
+    pub fn set_pane_frame(&self, index: usize, texture: Option<gdk::Texture>, view: (u32, u32)) {
+        if let Some(pane) = self.imp().panes.borrow_mut().get_mut(index) {
+            pane.texture = texture;
+            pane.view = view;
+        }
+        self.invalidate_contents();
+    }
+
     /// Show nothing, as when no machine is connected.
     pub fn clear(&self) {
         let imp = self.imp();
         imp.view.set((0, 0));
+        if !imp.panes.borrow().is_empty() {
+            imp.panes.borrow_mut().clear();
+            self.invalidate_size();
+        }
         if imp.texture.borrow_mut().take().is_some() {
             self.invalidate_size();
             self.invalidate_contents();
@@ -188,6 +302,55 @@ impl FramePaintable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rect(x: f64, y: f64, width: f64, height: f64) -> Rect {
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn screens_keep_their_places_in_proportion() {
+        let screens = [
+            rect(0.0, 0.0, 2560.0, 1440.0),
+            rect(2560.0, 180.0, 1920.0, 1080.0),
+            rect(4480.0, 0.0, 2560.0, 1440.0),
+        ];
+        let panes = arrange(&screens, 1404.0, 1000.0);
+        assert_eq!(panes.len(), 3);
+        let fit = 1404.0 / 7040.0;
+        let top = (1000.0 - 1440.0 * fit) / 2.0;
+        assert_eq!(panes[0], rect(0.0, top, 2560.0 * fit, 1440.0 * fit));
+        assert_eq!(
+            panes[1],
+            rect(2560.0 * fit, top + 180.0 * fit, 1920.0 * fit, 1080.0 * fit)
+        );
+        assert_eq!(panes[2].x + panes[2].width, 1404.0);
+    }
+
+    #[test]
+    fn screens_are_placed_relative_to_the_leftmost_and_topmost() {
+        let panes = arrange(
+            &[
+                rect(-1920.0, -100.0, 1920.0, 1080.0),
+                rect(0.0, 0.0, 1920.0, 1080.0),
+            ],
+            384.0,
+            1000.0,
+        );
+        assert_eq!(panes[0].x, 0.0);
+        assert_eq!(panes[1].x, 192.0);
+        assert_eq!(panes[1].y - panes[0].y, 10.0);
+    }
+
+    #[test]
+    fn nothing_to_arrange_gives_no_panes() {
+        assert!(arrange(&[], 100.0, 100.0).is_empty());
+        assert!(arrange(&[rect(0.0, 0.0, 10.0, 10.0)], 0.0, 100.0).is_empty());
+    }
 
     #[test]
     fn doubles_when_the_widget_has_room() {

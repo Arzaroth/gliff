@@ -80,6 +80,11 @@ struct Cli {
     /// the GLIFF_VIDEO environment variable.
     #[arg(long, value_parser = ["gpu", "cpu"])]
     video: Option<String>,
+    /// Run COMMAND on the remote machine as an app in a window of its own:
+    /// it gets a private screen the size of this window, the window takes
+    /// its title, and closing either closes the other. With ssh only.
+    #[arg(long, value_name = "COMMAND", conflicts_with_all = ["output", "headless"])]
+    app: Option<String>,
 }
 
 /// Everything the UI shares with its callbacks.
@@ -123,6 +128,9 @@ struct App {
     /// Size of the video widget in device pixels, rounded down to even.
     view_size: Cell<(u32, u32)>,
     view_scale: Cell<f64>,
+    /// The session menu, hidden until something adds an entry to it.
+    session_btn: gtk::MenuButton,
+    session_list: gtk::Box,
     /// Evdev codes currently held on the remote, so they can all be released
     /// when the keyboard is handed back to the local compositor.
     pressed_keys: RefCell<BTreeSet<u32>>,
@@ -159,6 +167,8 @@ struct Session {
     /// The server is streaming: set by its Connected status, cleared when
     /// the connection drops.
     connected: Cell<bool>,
+    /// The title of the app the session runs, in app mode.
+    app_title: RefCell<Option<String>>,
     /// The server streams a dedicated headless output: its frames carry the
     /// compositor-drawn cursor, so the local pointer is hidden over the video.
     headless: Cell<bool>,
@@ -205,6 +215,7 @@ impl Session {
             gave_up: Cell::new(false),
             remembered: Cell::new(false),
             connected: Cell::new(false),
+            app_title: RefCell::new(None),
             headless: Cell::new(false),
             stream_size: Cell::new((0, 0)),
             stream_view: Cell::new((0, 0)),
@@ -259,6 +270,10 @@ fn ssh_endpoint(cli: &Cli, host: &str) -> Endpoint {
     let mut t = SshTarget::new(host.to_string());
     t.server_bin = cli.server_bin.clone();
     t.server_args = match (&cli.output, cli.headless) {
+        _ if cli.app.is_some() => vec![
+            "--app".into(),
+            shell_quote(cli.app.as_deref().unwrap_or_default()),
+        ],
         (Some(name), _) => vec!["--output".into(), name.clone()],
         (None, true) => vec!["--headless".into()],
         (None, false) => vec!["--output".into(), "auto".into()],
@@ -276,6 +291,30 @@ fn machine_name(endpoint: &Endpoint) -> &str {
 
 /// Title in the `Document — App` form used by GNOME apps, so the machine
 /// is what a task switcher shows first.
+/// Start another gliff window running `command` on `target`'s machine.
+fn open_remote_app(target: &SshTarget, command: &str) -> std::io::Result<()> {
+    std::process::Command::new(std::env::current_exe()?)
+        .args(remote_app_args(target, command))
+        .spawn()
+        .map(drop)
+}
+
+fn remote_app_args(target: &SshTarget, command: &str) -> Vec<String> {
+    vec![
+        "--app".into(),
+        command.into(),
+        "--server-bin".into(),
+        target.server_bin.clone(),
+        target.host.clone(),
+    ]
+}
+
+/// `text` quoted for a POSIX shell: ssh hands the remote shell its
+/// arguments joined into one command line.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
 fn window_title(endpoint: &Endpoint) -> String {
     format!("{} — Gliff", machine_name(endpoint))
 }
@@ -323,6 +362,16 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
         .icon_name("utilities-system-monitor-symbolic")
         .tooltip_text("Show stats")
         .build();
+    let session_list = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(2)
+        .build();
+    let session_btn = gtk::MenuButton::builder()
+        .icon_name("view-more-symbolic")
+        .tooltip_text("Session")
+        .popover(&gtk::Popover::builder().child(&session_list).build())
+        .visible(false)
+        .build();
     let tabs = gtk::Box::builder().spacing(6).build();
     let tabs_scroller = gtk::ScrolledWindow::builder()
         .child(&tabs)
@@ -333,8 +382,12 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
     header.pack_start(&tabs_scroller);
     header.pack_start(&add_btn);
     header.pack_start(&add_revealer);
+    if cli.app.is_some() {
+        tabs_scroller.set_visible(false);
+    }
     header.pack_end(&fullscreen_btn);
     header.pack_end(&stats_btn);
+    header.pack_end(&session_btn);
 
     let stats = gtk::Label::builder()
         .halign(gtk::Align::Start)
@@ -417,6 +470,8 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
         local_clipboard: RefCell::new(None),
         view_size: Cell::new((0, 0)),
         view_scale: Cell::new(1.0),
+        session_btn: session_btn.clone(),
+        session_list,
         pressed_keys: RefCell::new(BTreeSet::new()),
         released: Cell::new(false),
         config_path: Config::default_path(),
@@ -430,6 +485,7 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
     });
     install_input_handlers(&ui, &video, &window, hotkey);
     install_resize_handler(&ui);
+    install_app_entry(&ui);
     install_address_bar(&ui, &connect_btn);
     refresh_tabs(&ui);
 
@@ -506,8 +562,10 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
     // closed, then any named on the command line, which is shown first.
     let config = Config::load(&ui.config_path);
     let from_cli = endpoints_from_cli(cli);
-    for machine in &config.open {
-        open_session(&ui, ssh_endpoint(cli, machine));
+    if cli.app.is_none() {
+        for machine in &config.open {
+            open_session(&ui, ssh_endpoint(cli, machine));
+        }
     }
     for endpoint in from_cli.iter().cloned() {
         if find_session(&ui, machine_name(&endpoint)).is_none() {
@@ -592,6 +650,11 @@ fn install_address_bar(ui: &Rc<App>, connect_btn: &gtk::Button) {
 /// Show the address bar in place of the +, or fold it back. With no tabs
 /// the address bar is all there is, so it stays.
 fn show_address_bar(ui: &App, show: bool) {
+    if ui.cli.app.is_some() {
+        ui.add_revealer.set_reveal_child(false);
+        ui.add_btn.set_visible(false);
+        return;
+    }
     let show = show || ui.tabs.first_child().is_none();
     ui.add_revealer.set_reveal_child(show);
     ui.add_btn.set_visible(!show);
@@ -969,13 +1032,16 @@ fn show_session(ui: &Rc<App>, s: &Rc<Session>) {
             ui.cli.no_clipboard,
             ui.local_clipboard.borrow().as_ref(),
         );
-        if matches!(s.endpoint, Endpoint::Ssh(_)) {
+        if matches!(s.endpoint, Endpoint::Ssh(_)) && ui.cli.app.is_none() {
             let mut config = Config::load(&ui.config_path);
             config.shown = Some(s.name.clone());
             save_config(ui, &config);
         }
     }
-    ui.window.set_title(Some(&window_title(&s.endpoint)));
+    ui.window.set_title(Some(&match &*s.app_title.borrow() {
+        Some(title) => format!("{title} ({})", s.name),
+        None => window_title(&s.endpoint),
+    }));
     show_status(ui, &s.status.borrow());
     ui.stats.set_text(&s.stats.borrow());
     match &*s.last_frame.borrow() {
@@ -1020,7 +1086,7 @@ fn stop_session(ui: &Rc<App>, name: &str) {
     ui.transfers.clear_connection(s.conn.get());
     s.last_frame.borrow_mut().take();
     // A machine stopped by hand stays stopped when the window reopens.
-    if matches!(s.endpoint, Endpoint::Ssh(_)) {
+    if matches!(s.endpoint, Endpoint::Ssh(_)) && ui.cli.app.is_none() {
         let mut config = Config::load(&ui.config_path);
         config.set_open(&s.name, false);
         save_config(ui, &config);
@@ -1183,6 +1249,15 @@ fn remember_machine(ui: &Rc<App>, s: &Session) {
 /// The status keeps the error that ended the connection, if any, so it stays
 /// on screen while the reconnects run.
 fn schedule_reconnect(ui: Rc<App>, s: Rc<Session>, generation: u64, error: Option<&str>) {
+    // Reconnecting an app session would start the app again.
+    if ui.cli.app.is_some() || s.app_title.borrow().is_some() {
+        if let Some(error) = error {
+            *s.last_error.borrow_mut() = Some(error.to_owned());
+        }
+        s.gave_up.set(true);
+        set_status(&ui, &s, &app_ended_status(error));
+        return;
+    }
     let n = s.retries.get() + 1;
     s.retries.set(n);
     if let Some(error) = error {
@@ -1202,6 +1277,13 @@ fn schedule_reconnect(ui: Rc<App>, s: Rc<Session>, generation: u64, error: Optio
             start_session(ui, s);
         }
     });
+}
+
+fn app_ended_status(error: Option<&str>) -> String {
+    match error {
+        Some(e) => format!("Error: {e}\nThe connection to the app ended"),
+        None => "The connection to the app ended".into(),
+    }
 }
 
 /// Keep the latest failure visible while a new connection attempt runs.
@@ -1342,7 +1424,9 @@ fn poll_status(ui: Rc<App>, s: Rc<Session>, rx: Receiver<Status>, generation: u6
                     set_status(&ui, &s, "");
                     // Visible before the first per-second stats arrive.
                     set_stats(&ui, &s, &video);
-                    remember_machine(&ui, &s);
+                    if ui.cli.app.is_none() {
+                        remember_machine(&ui, &s);
+                    }
                     // A fresh server starts at its own default size; a
                     // reconnect must bring it back to the window. The gate
                     // compares against the view, so a server-chosen
@@ -1447,6 +1531,20 @@ fn poll_status(ui: Rc<App>, s: Rc<Session>, rx: Receiver<Status>, generation: u6
                     show_disconnected(&ui, &s);
                     s.gave_up.set(true);
                     return glib::ControlFlow::Break;
+                }
+                Status::AppTitle(title) => {
+                    if is_active(&ui, &s) {
+                        ui.window.set_title(Some(&format!("{title} ({})", s.name)));
+                    }
+                    *s.app_title.borrow_mut() = Some(title);
+                }
+                Status::AppClosed => {
+                    tracing::info!(machine = %s.name, "the app closed");
+                    s.gave_up.set(true);
+                    if ui.cli.app.is_some() {
+                        ui.window.close();
+                        return glib::ControlFlow::Break;
+                    }
                 }
                 Status::Closed => {
                     show_disconnected(&ui, &s);
@@ -2236,10 +2334,81 @@ fn device_scale(ui: &App) -> f64 {
         .map_or(ui.video.scale_factor() as f64, |s| s.scale())
 }
 
+/// *Open a remote app*: run a command on the shown machine, in a window of
+/// its own.
+fn install_app_entry(ui: &Rc<App>) {
+    let app_entry = gtk::Entry::builder()
+        .placeholder_text("Open a remote app…")
+        .tooltip_text("A command to run on the shown machine, in a window of its own")
+        .build();
+    let weak = Rc::downgrade(ui);
+    app_entry.connect_activate(move |entry| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let command = entry.text().trim().to_string();
+        let Some(Endpoint::Ssh(target)) = active(&ui).map(|s| s.endpoint.clone()) else {
+            return;
+        };
+        if command.is_empty() {
+            return;
+        }
+        ui.session_btn.popdown();
+        entry.set_text("");
+        match open_remote_app(&target, &command) {
+            Ok(()) => show_hint(&ui, &format!("Opening {command}…")),
+            Err(e) => show_hint(&ui, &format!("Cannot open {command}: {e}")),
+        }
+    });
+    add_session_entry(ui, &app_entry);
+    let weak = Rc::downgrade(ui);
+    ui.session_btn
+        .popover()
+        .expect("the session menu has a popover")
+        .connect_show(move |_| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            app_entry
+                .set_sensitive(active(&ui).is_some_and(|s| matches!(s.endpoint, Endpoint::Ssh(_))));
+        });
+}
+
+/// Add an entry to the session menu, which shows from its first entry on.
+fn add_session_entry(ui: &App, entry: &impl IsA<gtk::Widget>) {
+    ui.session_list.append(entry);
+    ui.session_btn.set_visible(true);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    #[test]
+    fn an_app_command_survives_the_remote_shell() {
+        assert_eq!(
+            shell_quote("firefox --new-window"),
+            "'firefox --new-window'"
+        );
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+    }
+
+    #[test]
+    fn a_remote_app_opens_through_the_same_server() {
+        let mut target = SshTarget::new("me@box".to_string());
+        target.server_bin = "/opt/gliff-server".into();
+        assert_eq!(
+            remote_app_args(&target, "firefox --new-window"),
+            [
+                "--app",
+                "firefox --new-window",
+                "--server-bin",
+                "/opt/gliff-server",
+                "me@box"
+            ]
+        );
+    }
 
     type Input = tokio::sync::mpsc::UnboundedReceiver<clipboard::ToWorker>;
 

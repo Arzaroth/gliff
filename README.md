@@ -88,6 +88,17 @@ A bare `gliff` opens the window with a tab for each machine you have used,
 and connects again to the ones that were connected when you closed it; with
 no machines yet, it opens with the address bar ready.
 
+**Remote apps.** `gliff --app firefox user@host` runs one app on the
+remote machine and shows only it, in a window of its own that takes the
+app's title: the app gets a private screen the size of the window and
+opens fullscreen and opaque on it, so menus and dialogs show inside it as
+usual. Resizing the window resizes the app. Closing the window closes the
+app as its close button would, and when the app closes, so does the
+window. Nothing is copied to your machine; the app runs remotely. The ⋮
+session menu's *Open a remote app* field does the same for the shown
+machine. An app session does not reconnect on its own, since that would
+start the app again.
+
 **Keyboard.** While the pointer is over the picture, everything you type goes
 to the remote machine, window-manager shortcuts included; move the pointer
 off it to get your own back. Press `Shift+Esc` to get your shortcuts back

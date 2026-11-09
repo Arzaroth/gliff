@@ -108,6 +108,10 @@ pub enum Status {
     /// The two ends speak different protocol versions, so retrying cannot
     /// help.
     Incompatible(String),
+    /// The title of the app the session runs.
+    AppTitle(String),
+    /// The app the session runs has closed.
+    AppClosed,
     Closed,
 }
 
@@ -900,6 +904,12 @@ where
                 anyhow::bail!("server error {code}: {message}")
             }
             ServerMsg::HelloAck { .. } => {}
+            ServerMsg::AppTitle { title } => {
+                let _ = status.send(Status::AppTitle(title));
+            }
+            ServerMsg::AppClosed => {
+                let _ = status.send(Status::AppClosed);
+            }
             other => {
                 if let Ok(clip) = other.into_clipboard() {
                     let payload = match &clip {

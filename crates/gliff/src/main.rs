@@ -474,8 +474,13 @@ fn build_ui(app: &adw::Application, cli: &Cli) {
     let video: gtk::Widget = picture.clone().upcast();
 
     let transfers = Rc::new(clipboard_ui::TransferBars::new());
+    let scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Never)
+        .child(&video)
+        .build();
     let overlay = gtk::Overlay::new();
-    overlay.set_child(Some(&video));
+    overlay.set_child(Some(&scroller));
     overlay.add_overlay(&stats);
     overlay.add_overlay(transfers.widget());
     overlay.add_overlay(&status);

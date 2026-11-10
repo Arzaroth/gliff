@@ -233,7 +233,11 @@ Every crate with `unsafe` documents the safety requirements at each block.
   graphical session from logind (`loginctl show-user <uid> -p Display`)
   and runs `loginctl lock-session` on it, for `ClientMsg::LockScreen` and,
   once `LockOnDisconnect` armed it, from a guard dropped on every way out
-  of the session. logind sends that session a Lock signal, which the
+  of the session. While armed, the server pings the client every 5 s and
+  ends the session after 15 s without a word from it, so a client that
+  lost power or its network, and never closed the connection, still locks
+  the screen. `lock-session` runs on a blocking thread, off the session's
+  loop. logind sends that session a Lock signal, which the
   desktop's idle daemon answers with its own lock screen; logind lets the
   session's owner lock it without a polkit prompt. The client arms it on
   each connection when the option is on, and on every open connection when

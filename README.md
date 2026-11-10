@@ -96,7 +96,8 @@ without moving the pointer. `--release-hotkey` changes that key (`ctrl+alt+q`,
 
 **Screen lock.** The ⋮ session menu's *Lock remote screen* locks the shown
 machine now, and *Lock when disconnecting* locks every machine whose
-connection ends, however it ends, and is remembered. The lock goes through
+connection ends, however it ends (a client that goes silent counts after
+15 s), and is remembered. The lock goes through
 logind, so the remote's own idle daemon shows its usual lock screen (on
 Omarchy, hypridle's `lock_cmd`).
 

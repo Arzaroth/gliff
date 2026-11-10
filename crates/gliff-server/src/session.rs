@@ -270,22 +270,31 @@ where
         .iter()
         .any(|feature| feature == gliff_proto::FEATURE_LOCK);
     let mut lock_on_end = crate::lock::LockOnEnd::default();
+    let mut last_heard = Instant::now();
+    let mut liveness = tokio::time::interval(LIVENESS_PING);
+    liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         let flow = tokio::select! {
             msg = msg_rx.recv() => match msg {
                 Some(Inbound::Msg(ClientMsg::LockScreen)) => {
+                    last_heard = Instant::now();
                     if lock_supported {
-                        crate::lock::lock();
+                        tokio::task::spawn_blocking(crate::lock::lock);
                     }
                     ControlFlow::Continue(())
                 }
                 Some(Inbound::Msg(ClientMsg::LockOnDisconnect { enabled })) => {
+                    last_heard = Instant::now();
                     lock_on_end.armed = enabled && lock_supported;
                     tracing::info!(enabled = lock_on_end.armed, "lock on disconnect");
                     ControlFlow::Continue(())
                 }
-                Some(Inbound::Msg(msg)) => session.on_client_msg(msg).await?,
+                Some(Inbound::Msg(msg)) => {
+                    last_heard = Instant::now();
+                    session.on_client_msg(msg).await?
+                }
                 Some(Inbound::Clipboard(msg, payload)) => {
+                    last_heard = Instant::now();
                     clipboard.on_peer_msg(msg, payload);
                     ControlFlow::Continue(())
                 }
@@ -308,6 +317,15 @@ where
                     None => clip_open = false,
                 }
                 ControlFlow::Continue(())
+            }
+            _ = liveness.tick(), if lock_on_end.armed => {
+                if last_heard.elapsed() > LIVENESS_TIMEOUT {
+                    tracing::info!("client stopped answering; ending the session");
+                    ControlFlow::Break(())
+                } else {
+                    session.writer.send(ServerMsg::Ping { t: now_ms() }, Vec::new());
+                    ControlFlow::Continue(())
+                }
             }
             ev = cap_rx.recv() => session.on_capture(ev)?,
             report = write_reports.recv() => {
@@ -523,6 +541,12 @@ const FIRST_FRAME_DEADLINE: Duration = Duration::from_millis(700);
 /// The starting ladder level: 30 fps, full quality. It halves the first
 /// burst against level 0 while the controller measures available capacity.
 const START_LEVEL: usize = 1;
+/// While the screen should lock when the connection ends, the client is
+/// pinged this often, and the session ends once it has been silent for the
+/// timeout: a client that loses power or its network never closes the
+/// connection.
+const LIVENESS_PING: Duration = Duration::from_secs(5);
+const LIVENESS_TIMEOUT: Duration = Duration::from_secs(15);
 
 impl Session {
     async fn on_client_msg(&mut self, msg: ClientMsg) -> Result<ControlFlow<()>> {

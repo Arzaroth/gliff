@@ -19,7 +19,7 @@
 #      (fcitx5), when fcitx5 and foot are installed
 #  12. focus changes do not stack shortcut-inhibit handlers
 #  13. the remote's screen locks when asked, and when a connection that
-#      asked for it ends (through a stand-in loginctl)
+#      asked for it ends or goes silent (through a stand-in loginctl)
 #
 # Exits non-zero on the first failure.
 set -uo pipefail
@@ -404,6 +404,18 @@ run_lock_case ""
 [ "$(locks)" = 1 ] || fail "a connection that did not ask locked the screen ($(tr '\n' ';' <"$lockcalls"))"
 run_lock_case disconnect
 [ "$(locks)" = 2 ] || fail "LockOnDisconnect did not lock when the connection ended ($(tr '\n' ';' <"$lockcalls"))"
+# A client that goes silent without closing the connection, as one that
+# lost power would, must still lock the screen.
+PATH="$lockdir:$PATH" "$SERVER" --listen 127.0.0.1:9051 --headless --instance "$NEST_SIG" >/tmp/gliff-e2e-lock-server.log 2>&1 &
+lsp=$!; PIDS+=("$lsp"); sleep 2
+damage & ldp=$!; PIDS+=("$ldp")
+GLIFF_SEND_LOCK=silent $PROBE --video "$CLIENT_VIDEO" serve-test --connect 127.0.0.1:9051 --frames 8 >/tmp/gliff-e2e-lock-client.log 2>&1 &
+lcp=$!; PIDS+=("$lcp")
+for _ in $(seq 1 150); do [ "$(locks)" = 3 ] && break; sleep 0.2; done
+[ "$(locks)" = 3 ] || fail "a silent client did not lock the screen ($(tr '\n' ';' <"$lockcalls"); $(tail -2 /tmp/gliff-e2e-lock-client.log | tr '\n' ' '))"
+kill -0 "$lcp" 2>/dev/null || fail "the silent client ended before the lock: $(tail -2 /tmp/gliff-e2e-lock-client.log | tr '\n' ' ')"
+grep -q SILENT /tmp/gliff-e2e-lock-client.log || fail "the silent client never armed the lock"
+kill "$lcp" "$ldp" "$lsp" 2>/dev/null; sleep 1
 rm -rf "$lockdir"
 echo "   screen lock PASS"
 

@@ -53,7 +53,7 @@ impl Queue {
                     ServerMsg::CursorShape { .. } | ServerMsg::CursorPos { .. }
                 )
             }),
-            ServerMsg::CursorPos { .. } | ServerMsg::Pong { .. } => {
+            ServerMsg::CursorPos { .. } | ServerMsg::Pong { .. } | ServerMsg::Ping { .. } => {
                 self.packets.retain(|(queued, _)| {
                     std::mem::discriminant(queued) != std::mem::discriminant(&msg)
                 });
@@ -217,7 +217,8 @@ mod tests {
                 },
                 Vec::new(),
             );
-            assert_eq!(queue.packets.len(), 6);
+            queue.push(ServerMsg::Ping { t: id as u64 }, Vec::new());
+            assert_eq!(queue.packets.len(), 7);
         }
         assert!(matches!(
             queue.packets[0].0,

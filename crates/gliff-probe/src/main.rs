@@ -602,7 +602,7 @@ fn serve_test(node: &std::path::Path, addr: &str, frames: usize, video: VideoMod
         let caps = ClientCaps { codecs: vec![Codec::H264], max_width: 1280, max_height: 720, chroma: vec![ChromaMode::Dual420, ChromaMode::Single420], features: gliff_proto::features() };
         writer.write_msg(&ClientMsg::Hello { version: gliff_proto::PROTOCOL_VERSION, keymap: String::new(), caps }).await?;
         let ack = reader.read_msg::<ServerMsg>().await?;
-        let ServerMsg::HelloAck { session, outputs, .. } = ack else { bail!("expected HelloAck, got {ack:?}") };
+        let ServerMsg::HelloAck { session, outputs, features, .. } = ack else { bail!("expected HelloAck, got {ack:?}") };
         eprintln!("  HelloAck: headless={} output={} ({} outputs)", session.headless, session.output, outputs.len());
         // A Ping may arrive before the StreamConfig; answer it right away.
         let (mut w, mut h, mut chroma) = loop {
@@ -650,8 +650,13 @@ fn serve_test(node: &std::path::Path, addr: &str, frames: usize, video: VideoMod
             Vec::new()
         };
         // GLIFF_SEND_LOCK=now asks the server to lock its screen;
-        // GLIFF_SEND_LOCK=disconnect asks it to lock when this connection ends.
+        // GLIFF_SEND_LOCK=disconnect asks it to lock when this connection ends;
+        // GLIFF_SEND_LOCK=silent asks the same, then stops reading and
+        // answering while holding the connection open.
         let send_lock = std::env::var("GLIFF_SEND_LOCK").ok().filter(|v| !v.is_empty());
+        if send_lock.is_some() && !features.iter().any(|f| f == gliff_proto::FEATURE_LOCK) {
+            bail!("GLIFF_SEND_LOCK is set but the server does not list the lock feature");
+        }
         let recv_file = std::env::var("GLIFF_RECV_CLIP_FILE").ok();
         let recv_dir = std::env::var("GLIFF_RECV_CLIP_DIR").ok().map(PathBuf::from);
         let mut clip_recv: Vec<u8> = Vec::new();
@@ -722,7 +727,12 @@ fn serve_test(node: &std::path::Path, addr: &str, frames: usize, video: VideoMod
                         match send_lock.as_deref() {
                             Some("now") => writer.write_msg(&ClientMsg::LockScreen).await?,
                             Some("disconnect") => writer.write_msg(&ClientMsg::LockOnDisconnect { enabled: true }).await?,
-                            Some(other) => bail!("GLIFF_SEND_LOCK={other}: want now or disconnect"),
+                            Some("silent") => {
+                                writer.write_msg(&ClientMsg::LockOnDisconnect { enabled: true }).await?;
+                                eprintln!("SILENT");
+                                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                            }
+                            Some(other) => bail!("GLIFF_SEND_LOCK={other}: want now, disconnect or silent"),
                             None => {}
                         }
                     }

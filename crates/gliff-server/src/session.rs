@@ -1581,8 +1581,9 @@ impl VideoEncoder {
                     modifier: info.modifier,
                 };
                 // The import is cached per ring buffer; the generation changes
-                // when the ring is reallocated (resize), so old imports are
-                // never reused.
+                // when the ring is reallocated (resize) and differs between
+                // capturers (a switched screen), so old imports are never
+                // reused.
                 let buffer_key = (frame.buffer.generation << 32) | frame.buffer.index as u64;
                 Ok(enc.encode_dmabuf_transformed(
                     buffer_key,

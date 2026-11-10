@@ -78,10 +78,10 @@ A mirrored screen keeps its own size and is fitted into the window. A private
 screen follows the window as you resize it, and is removed when you
 disconnect.
 
-When the remote machine has more than one screen, the screen button in the
-header lists them and switches the mirrored one without reconnecting. The
-list is read again each time the menu opens, so it shows screens plugged in
-since. A private screen cannot be switched.
+When gliff mirrors a screen of the remote machine, the screen button in the
+header lists the remote's screens and switches the mirrored one without
+reconnecting. The list is read again each time the menu opens, so it shows
+screens plugged in since. A private screen cannot be switched.
 
 Every machine you connect to gets a tab in the title bar. Click a tab to
 connect to that machine, or to switch to it: each connection keeps running

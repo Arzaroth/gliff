@@ -185,8 +185,10 @@ pub struct DmabufInfo {
 /// A buffer in the capture ring. Shared with consumers through an `Arc`.
 pub struct CaptureBuffer {
     pub index: usize,
-    /// Ring generation this buffer belongs to; bumped on every reallocation so
-    /// a release from a pre-resize frame cannot free a current buffer.
+    /// Ring generation this buffer belongs to, unique across every capturer
+    /// in the process: a release from a pre-resize frame cannot free a
+    /// current buffer, and a consumer that caches per buffer never mistakes
+    /// one capturer's buffer for another's.
     pub generation: u64,
     pub info: DmabufInfo,
     backing: Backing,

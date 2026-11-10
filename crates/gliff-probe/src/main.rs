@@ -720,10 +720,11 @@ fn serve_test(node: &std::path::Path, addr: &str, frames: usize, video: VideoMod
                     }
                     if got == 2 {
                         if let Some(name) = select_output.clone() {
+                            eprintln!("SELECTED {name}");
                             writer.write_msg(&ClientMsg::SelectOutput { name }).await?;
                         }
                     }
-                    if got == 3 { writer.write_msg(&ClientMsg::Resize { width: 800, height: 600, scale: 2.0 }).await?; }
+                    if got == 3 && select_output.is_none() { writer.write_msg(&ClientMsg::Resize { width: 800, height: 600, scale: 2.0 }).await?; }
                     if got == 4 && (send_clip.is_some() || send_file.is_some() || !send_files.entries.is_empty()) {
                         let mut mime_types: Vec<String> = Vec::new();
                         if send_clip.is_some() { mime_types.extend(TEXT_MIMES.iter().map(|m| m.to_string())); }
@@ -802,7 +803,7 @@ fn serve_test(node: &std::path::Path, addr: &str, frames: usize, video: VideoMod
         writer.write_msg(&ClientMsg::Bye).await?;
         eprintln!("RESULT decoded {got} frames, {keyframes} keyframes");
         status(got >= frames && keyframes >= 1, &format!("decoded {got} frames from the server ({keyframes} keyframes, resize honoured)"));
-        if frames > 3 {
+        if frames > 3 && select_output.is_none() {
             let what = if session.headless { "server applied the requested output scale" } else { "server scaled the mirrored screen down to the window" };
             status(scaled, what);
         }

@@ -363,6 +363,11 @@ fn run(
     result
 }
 
+fn next_ring_generation() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Every ring buffer has the output's size, so an output past the caller's
 /// limit would cost that much memory several times over.
 fn check_ring_size(cfg: &CaptureConfig, width: u32, height: u32) -> Result<()> {
@@ -609,7 +614,7 @@ impl State {
             self.constraints.complete.width,
             self.constraints.complete.height,
         )?;
-        self.ring_generation += 1;
+        self.ring_generation = next_ring_generation();
         if let Some((fourcc, format)) = self.choose_shm_format() {
             return self.allocate_shm_ring(fourcc, format);
         }
@@ -1290,6 +1295,14 @@ mod tests {
     use crate::SizeLimit;
 
     const XRGB: u32 = DrmFourcc::Xrgb8888 as u32;
+
+    #[test]
+    fn ring_generations_never_repeat_across_capturers() {
+        let first = next_ring_generation();
+        let second = next_ring_generation();
+        assert_ne!(first, 0);
+        assert!(second > first);
+    }
     const ARGB_SHM: u32 = wl_shm::Format::Argb8888 as u32;
     const XRGB_SHM: u32 = wl_shm::Format::Xrgb8888 as u32;
 

@@ -2290,15 +2290,16 @@ fn install_screen_menu(ui: &Rc<App>) {
         send(&ui, ClientMsg::ListOutputs);
     });
 }
-/// Show the screen menu for the shown session when it has screens to pick
-/// from, and list them with the current one checked.
+/// Show the screen menu whenever the shown session can switch, even with
+/// one screen, so opening it finds monitors plugged in since; list them
+/// with the current one checked.
 fn refresh_screens(ui: &Rc<App>) {
     let shown = active(ui).filter(|s| s.connected.get() && s.outputs_selectable.get());
     let outputs = shown
         .as_ref()
         .map(|s| s.outputs.borrow().clone())
         .unwrap_or_default();
-    ui.screen_btn.set_visible(outputs.len() > 1);
+    ui.screen_btn.set_visible(shown.is_some());
     while let Some(child) = ui.screen_list.first_child() {
         ui.screen_list.remove(&child);
     }

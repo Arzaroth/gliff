@@ -19,7 +19,9 @@
 #      (fcitx5), when fcitx5 and foot are installed
 #  12. focus changes do not stack shortcut-inhibit handlers
 #  13. the remote's screen locks when asked, and when a connection that
-#      asked for it ends or goes silent (through a stand-in loginctl)
+#      asked for it ends, goes silent or is hung up on, from the compositor's
+#      session (through a stand-in omarchy-system-lock); on Omarchy, the
+#      Omarchy shell running in a second nested Hyprland really locks
 #
 # Exits non-zero on the first failure.
 set -uo pipefail
@@ -31,6 +33,7 @@ NEST_SIG=""
 cleanup() {
     for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done
     [ -n "$NEST_SIG" ] && pkill -9 -f "Hyprland .*e2e-hypr.lua" 2>/dev/null || true
+    pkill -9 -f "Hyprland .*e2e-lock-hypr.conf" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -58,13 +61,22 @@ hl.config({
     },
 })
 HYPR
+# The compositor finds the stand-in lock command of section 13 on its PATH,
+# and only the compositor does.
+LOCKDIR=$(mktemp -d); LOCKCALLS="$LOCKDIR/calls"; touch "$LOCKCALLS"
+cat >"$LOCKDIR/omarchy-system-lock" <<LOCK
+#!/bin/sh
+echo "lock \$WAYLAND_DISPLAY \$HYPRLAND_INSTANCE_SIGNATURE" >>"$LOCKCALLS"
+LOCK
+chmod +x "$LOCKDIR/omarchy-system-lock"
 before=$(ls "$XDG_RUNTIME_DIR/hypr" 2>/dev/null)
-WAYLAND_DISPLAY="$WAYLAND_DISPLAY" HYPRLAND_INSTANCE_SIGNATURE= setsid Hyprland -c "$CONF" >/tmp/gliff-e2e-hypr.log 2>&1 &
+PATH="$LOCKDIR:$PATH" WAYLAND_DISPLAY="$WAYLAND_DISPLAY" HYPRLAND_INSTANCE_SIGNATURE= setsid Hyprland -c "$CONF" >/tmp/gliff-e2e-hypr.log 2>&1 &
 sleep 6
 # The nested instance is the directory that was not there before we started it.
 NEST_SIG=$(comm -13 <(echo "$before" | sort) <(ls "$XDG_RUNTIME_DIR/hypr" | sort) | head -1)
 [ -n "$NEST_SIG" ] || fail "nested Hyprland did not start"
 export HYPRLAND_INSTANCE_SIGNATURE="$NEST_SIG"
+HOST_WAYLAND_DISPLAY=$WAYLAND_DISPLAY
 export WAYLAND_DISPLAY=$(sed -n 2p "$XDG_RUNTIME_DIR/hypr/$NEST_SIG/hyprland.lock")
 echo "   nested sig $NEST_SIG on $WAYLAND_DISPLAY"
 
@@ -376,47 +388,110 @@ inhibits=$(grep -c "compositor shortcut inhibit" "$ilog")
 rm -rf "$ixdg" "$txdg" "$ilog"
 echo "   shortcut inhibit PASS"
 
-echo "== 13. screen lock, now and on disconnect =="
-# A stand-in loginctl records what the server asks of logind, so the test
-# locks nothing: show-user names session 7, lock-session is logged.
-lockdir=$(mktemp -d); lockcalls="$lockdir/calls"; touch "$lockcalls"
-cat >"$lockdir/loginctl" <<LOGINCTL
-#!/bin/sh
-echo "\$*" >>"$lockcalls"
-[ "\$1" = show-user ] && echo 7
-exit 0
-LOGINCTL
-chmod +x "$lockdir/loginctl"
-locks() { grep -c "^lock-session 7$" "$lockcalls"; }
+echo "== 13. screen lock, now, on disconnect and on hangup =="
+# The server runs with what ssh gives it: no graphical session, and lock
+# commands of its own that the lock must not reach.
+outside=$(mktemp -d)
+for cmd in omarchy-system-lock loginctl; do
+    printf '#!/bin/sh\necho "%s $*" >>"%s/calls"\n' "$cmd" "$outside" >"$outside/$cmd"
+    chmod +x "$outside/$cmd"
+done
+touch "$outside/calls"
+lock_server() {
+    env -u WAYLAND_DISPLAY -u HYPRLAND_INSTANCE_SIGNATURE PATH="$outside:$PATH" \
+        "$SERVER" --listen 127.0.0.1:9051 --headless --instance "$NEST_SIG" >/tmp/gliff-e2e-lock-server.log 2>&1 &
+    lsp=$!; PIDS+=("$lsp"); sleep 2
+}
+locks() { grep -cx "lock $WAYLAND_DISPLAY $NEST_SIG" "$LOCKCALLS"; }
+lock_state() { echo "compositor: $(tr '\n' ';' <"$LOCKCALLS") server: $(tr '\n' ';' <"$outside/calls")"; }
 run_lock_case() {
     local send=$1
-    PATH="$lockdir:$PATH" "$SERVER" --listen 127.0.0.1:9051 --headless --instance "$NEST_SIG" >/tmp/gliff-e2e-lock-server.log 2>&1 &
-    local sp=$!; PIDS+=("$sp"); sleep 2
+    lock_server
     damage & local dp=$!; PIDS+=("$dp")
     GLIFF_SEND_LOCK=$send timeout 20 $PROBE --video "$CLIENT_VIDEO" serve-test --connect 127.0.0.1:9051 --frames 8 >/tmp/gliff-e2e-lock-client.log 2>&1 \
         || fail "lock client ($send): $(tail -2 /tmp/gliff-e2e-lock-client.log | tr '\n' ' ')"
-    for _ in $(seq 1 30); do kill -0 "$sp" 2>/dev/null || break; sleep 0.2; done
-    kill "$dp" "$sp" 2>/dev/null; sleep 1
+    for _ in $(seq 1 30); do kill -0 "$lsp" 2>/dev/null || break; sleep 0.2; done
+    kill "$dp" "$lsp" 2>/dev/null; sleep 1
+}
+wait_locks() { for _ in $(seq 1 "$2"); do [ "$(locks)" = "$1" ] && return 0; sleep 0.2; done; return 1; }
+# A client that arms the lock and then stays connected without a word.
+silent_client() {
+    damage & ldp=$!; PIDS+=("$ldp")
+    GLIFF_SEND_LOCK=silent $PROBE --video "$CLIENT_VIDEO" serve-test --connect 127.0.0.1:9051 --frames 8 >/tmp/gliff-e2e-lock-client.log 2>&1 &
+    lcp=$!; PIDS+=("$lcp")
+    for _ in $(seq 1 50); do grep -q SILENT /tmp/gliff-e2e-lock-client.log && break; sleep 0.2; done
+    grep -q SILENT /tmp/gliff-e2e-lock-client.log || fail "the silent client never armed the lock"
 }
 run_lock_case now
-[ "$(locks)" = 1 ] || fail "LockScreen did not lock the session ($(tr '\n' ';' <"$lockcalls"))"
+wait_locks 1 25 || fail "LockScreen did not lock the session ($(lock_state))"
 run_lock_case ""
-[ "$(locks)" = 1 ] || fail "a connection that did not ask locked the screen ($(tr '\n' ';' <"$lockcalls"))"
+sleep 1; [ "$(locks)" = 1 ] || fail "a connection that did not ask locked the screen ($(lock_state))"
 run_lock_case disconnect
-[ "$(locks)" = 2 ] || fail "LockOnDisconnect did not lock when the connection ended ($(tr '\n' ';' <"$lockcalls"))"
+wait_locks 2 25 || fail "LockOnDisconnect did not lock when the connection ended ($(lock_state))"
 # A client that goes silent without closing the connection, as one that
 # lost power would, must still lock the screen.
-PATH="$lockdir:$PATH" "$SERVER" --listen 127.0.0.1:9051 --headless --instance "$NEST_SIG" >/tmp/gliff-e2e-lock-server.log 2>&1 &
-lsp=$!; PIDS+=("$lsp"); sleep 2
-damage & ldp=$!; PIDS+=("$ldp")
-GLIFF_SEND_LOCK=silent $PROBE --video "$CLIENT_VIDEO" serve-test --connect 127.0.0.1:9051 --frames 8 >/tmp/gliff-e2e-lock-client.log 2>&1 &
-lcp=$!; PIDS+=("$lcp")
-for _ in $(seq 1 150); do [ "$(locks)" = 3 ] && break; sleep 0.2; done
-[ "$(locks)" = 3 ] || fail "a silent client did not lock the screen ($(tr '\n' ';' <"$lockcalls"); $(tail -2 /tmp/gliff-e2e-lock-client.log | tr '\n' ' '))"
+lock_server
+silent_client
+wait_locks 3 150 || fail "a silent client did not lock the screen ($(lock_state); $(tail -2 /tmp/gliff-e2e-lock-client.log | tr '\n' ' '))"
 kill -0 "$lcp" 2>/dev/null || fail "the silent client ended before the lock: $(tail -2 /tmp/gliff-e2e-lock-client.log | tr '\n' ' ')"
-grep -q SILENT /tmp/gliff-e2e-lock-client.log || fail "the silent client never armed the lock"
 kill "$lcp" "$ldp" "$lsp" 2>/dev/null; sleep 1
-rm -rf "$lockdir"
+# ssh hangs up on the server when the connection drops, and a stopped
+# session is terminated: both must end the session through the lock.
+n=3
+for sig in HUP TERM; do
+    lock_server
+    silent_client
+    kill -"$sig" "$lsp"
+    n=$((n + 1))
+    wait_locks "$n" 25 || fail "SIG$sig did not lock the screen ($(lock_state))"
+    for _ in $(seq 1 25); do kill -0 "$lsp" 2>/dev/null || break; sleep 0.2; done
+    kill -0 "$lsp" 2>/dev/null && fail "SIG$sig did not end the server"
+    kill "$lcp" "$ldp" 2>/dev/null; sleep 1
+done
+[ -s "$outside/calls" ] && fail "the lock ran outside the graphical session ($(lock_state))"
+rm -rf "$outside" "$LOCKDIR"
 echo "   screen lock PASS"
+
+# The stand-ins prove where the lock runs; this proves it locks. The real
+# omarchy-system-lock also locks 1Password and stops the screensaver of every
+# session on the machine, so the nested Omarchy shell is asked directly.
+OMARCHY_SHELL_DIR=${OMARCHY_PATH:-/usr/share/omarchy}/shell
+if command -v quickshell >/dev/null && command -v omarchy-shell >/dev/null && [ -f "$OMARCHY_SHELL_DIR/shell.qml" ]; then
+    echo "== 13b. the Omarchy shell locks a session (legacy config) =="
+    realdir=$(mktemp -d)
+    printf '#!/bin/sh\nexec omarchy-shell lock lock\n' >"$realdir/omarchy-system-lock"
+    chmod +x "$realdir/omarchy-system-lock"
+    LCONF=$(mktemp --suffix=-e2e-lock-hypr.conf)
+    printf 'monitor=,1280x800,auto,1\nmisc {\n    disable_splash_rendering = true\n}\necosystem {\n    no_update_news = true\n    no_donation_nag = true\n}\n' >"$LCONF"
+    before=$(ls "$XDG_RUNTIME_DIR/hypr")
+    PATH="$realdir:$PATH" WAYLAND_DISPLAY="$HOST_WAYLAND_DISPLAY" HYPRLAND_INSTANCE_SIGNATURE= setsid Hyprland -c "$LCONF" >/tmp/gliff-e2e-lock-hypr.log 2>&1 &
+    lhp=$!; PIDS+=("$lhp"); sleep 6
+    LSIG=$(comm -13 <(echo "$before" | sort) <(ls "$XDG_RUNTIME_DIR/hypr" | sort) | head -1)
+    [ -n "$LSIG" ] || fail "the legacy-config nested Hyprland did not start"
+    LWD=$(sed -n 2p "$XDG_RUNTIME_DIR/hypr/$LSIG/hyprland.lock")
+    shell_lock() { WAYLAND_DISPLAY=$LWD OMARCHY_PATH=${OMARCHY_SHELL_DIR%/shell} timeout 5 omarchy-shell lock status 2>/dev/null; }
+    HYPRLAND_INSTANCE_SIGNATURE=$LSIG hyprctl dispatch exec "quickshell -n -p $OMARCHY_SHELL_DIR >/tmp/gliff-e2e-lock-shell.log 2>&1" >/dev/null
+    for _ in $(seq 1 100); do shell_lock | grep -q '"locked":false' && break; sleep 0.2; done
+    shell_lock | grep -q '"locked":false' || fail "the nested Omarchy shell did not start: $(tail -2 /tmp/gliff-e2e-lock-shell.log | tr '\n' ' ')"
+    if shell_lock | grep -q '"passwordPam":true'; then
+        env -u WAYLAND_DISPLAY -u HYPRLAND_INSTANCE_SIGNATURE "$SERVER" --listen 127.0.0.1:9051 --headless --instance "$LSIG" >/tmp/gliff-e2e-lock-server.log 2>&1 &
+        lsp=$!; PIDS+=("$lsp"); sleep 2
+        GLIFF_SEND_LOCK=disconnect timeout 20 $PROBE --video "$CLIENT_VIDEO" serve-test --connect 127.0.0.1:9051 --frames 8 >/tmp/gliff-e2e-lock-client.log 2>&1 \
+            || fail "lock client (Omarchy): $(tail -2 /tmp/gliff-e2e-lock-client.log | tr '\n' ' ')"
+        for _ in $(seq 1 50); do shell_lock | grep -q '"sessionLocked":true' && break; sleep 0.2; done
+        shell_lock | grep -q '"sessionLocked":true' || fail "the Omarchy shell did not lock the session: $(shell_lock)"
+        kill "$lsp" 2>/dev/null
+        echo "   Omarchy lock PASS"
+    else
+        echo "   SKIP: no password PAM for the Omarchy lock screen"
+    fi
+    for p in $(pgrep -x quickshell); do
+        tr '\0' '\n' <"/proc/$p/environ" 2>/dev/null | grep -qx "HYPRLAND_INSTANCE_SIGNATURE=$LSIG" && kill "$p"
+    done
+    kill "$lhp" 2>/dev/null; sleep 1
+    rm -rf "$realdir" "$LCONF"
+else
+    echo "   SKIP 13b: not an Omarchy machine"
+fi
 
 echo "E2E PASS: all checks passed"

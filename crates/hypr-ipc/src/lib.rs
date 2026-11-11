@@ -188,6 +188,16 @@ impl Instance {
         )
     }
 
+    /// Run a shell command from the compositor, so it gets the graphical
+    /// session's environment rather than the caller's.
+    pub fn exec(&self, command: &str) -> Result<()> {
+        self.dispatcher(
+            &format!("exec {command}"),
+            &format!("hl.dsp.exec_cmd({})", lua_string(command)),
+            || true,
+        )
+    }
+
     pub fn get_option(&self, name: &str) -> Result<OptionValue> {
         self.request_json(&format!("getoption {name}"))
     }
@@ -221,6 +231,23 @@ impl Instance {
             other => other,
         }
     }
+}
+
+fn lua_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' | '\\' => {
+                out.push('\\');
+                out.push(c);
+            }
+            c if c.is_ascii_control() => out.push_str(&format!("\\{:03}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Round a mode down until `scale` divides it into whole logical pixels.
@@ -389,6 +416,24 @@ mod tests {
             matches!(result, Err(Error::Command { response, .. }) if response == "monitor not found")
         );
         assert_eq!(commands, ["dispatch dpms on gliff-7"]);
+    }
+
+    #[test]
+    fn exec_falls_back_to_a_quoted_lua_command() {
+        let (result, commands) = against_socket(&["ok"], |i| i.exec("echo hi"));
+        assert!(result.is_ok());
+        assert_eq!(commands, ["dispatch exec echo hi"]);
+
+        const LUA: &str = "error: [string \"return hl.dispatch(exec if true...\"]:1: ')' expected near 'if'\n\n \u{2192} Note: dispatch in lua is a shorthand for hl.dispatch(...), your syntax might need to be updated.";
+        let (result, commands) = against_socket(&[LUA, "ok"], |i| i.exec("printf \"a\\\\b\"\t>x"));
+        assert!(result.is_ok());
+        assert_eq!(
+            commands,
+            [
+                "dispatch exec printf \"a\\\\b\"\t>x",
+                r#"dispatch hl.dsp.exec_cmd("printf \"a\\\\b\"\009>x")"#,
+            ]
+        );
     }
 
     #[test]

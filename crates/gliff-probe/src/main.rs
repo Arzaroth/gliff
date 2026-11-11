@@ -804,6 +804,7 @@ fn serve_test(node: &std::path::Path, addr: &str, frames: usize, video: VideoMod
                     if let Some(s) = serving.as_mut() { s.3 = s.3.saturating_sub(1); }
                     push_chunks(&mut writer, &mut serving).await?;
                 }
+                ServerMsg::Ping { t } => writer.write_msg(&ClientMsg::Pong { t }).await?,
                 ServerMsg::CursorPos { .. } | ServerMsg::Pong { .. } | ServerMsg::Error { .. } => {}
                 _ => {}
             }

@@ -269,7 +269,7 @@ where
         .features
         .iter()
         .any(|feature| feature == gliff_proto::FEATURE_LOCK);
-    let mut lock_on_end = crate::lock::LockOnEnd::default();
+    let mut lock_on_end = crate::lock::LockOnEnd::new(session.instance.clone());
     let mut last_heard = Instant::now();
     let mut liveness = tokio::time::interval(LIVENESS_PING);
     liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -279,7 +279,8 @@ where
                 Some(Inbound::Msg(ClientMsg::LockScreen)) => {
                     last_heard = Instant::now();
                     if lock_supported {
-                        tokio::task::spawn_blocking(crate::lock::lock);
+                        let instance = session.instance.clone();
+                        tokio::task::spawn_blocking(move || crate::lock::lock(&instance));
                     }
                     ControlFlow::Continue(())
                 }

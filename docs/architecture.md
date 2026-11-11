@@ -229,19 +229,21 @@ Every crate with `unsafe` documents the safety requirements at each block.
   never baked into the video. An image with no visible shape falls back to the
   default pointer (see `hardware-quirks.md` for why Hyprland sends those).
 
-- **Screen lock.** A server that listed the `lock` feature reads the user's
-  graphical session from logind (`loginctl show-user <uid> -p Display`)
-  and runs `loginctl lock-session` on it, for `ClientMsg::LockScreen` and,
-  once `LockOnDisconnect` armed it, from a guard dropped on every way out
-  of the session. While armed, the server pings the client every 5 s and
-  ends the session after 15 s without a word from it, so a client that
-  lost power or its network, and never closed the connection, still locks
-  the screen. `lock-session` runs on a blocking thread, off the session's
-  loop. logind sends that session a Lock signal, which the
-  desktop's idle daemon answers with its own lock screen; logind lets the
-  session's owner lock it without a polkit prompt. The client arms it on
-  each connection when the option is on, and on every open connection when
-  it changes.
+- **Screen lock.** A server that listed the `lock` feature has the
+  compositor run the lock (`exec` over Hyprland IPC, or `hl.dsp.exec_cmd`
+  on a Lua config), so it runs in the graphical session's environment and
+  not the ssh session's. It runs `omarchy-system-lock` where that exists,
+  since the Omarchy shell draws the lock screen and does not listen to
+  logind, and `loginctl lock-session auto` elsewhere, whose Lock signal the
+  desktop's idle daemon answers; logind lets the session's owner lock it
+  without a polkit prompt. The server locks for `ClientMsg::LockScreen`
+  and, once `LockOnDisconnect` armed it, from a guard dropped on every way
+  out of the session. While armed, the server pings the
+  client every 5 s and ends the session after 15 s without a word from it,
+  so a client that lost power or its network, and never closed the
+  connection, still locks the screen. A `LockScreen` request runs on a blocking
+  thread, off the session's loop. The client arms it on each connection
+  when the option is on, and on every open connection when it changes.
 
 - **Clipboard.** Lazy, typed and chunked; `gliff_proto::clipboard` has the
   rules and `gliff_transport::clipboard` the engine both peers run. A new

@@ -392,9 +392,11 @@ grep -q "^OUTPUTS: current=$first selectable=true screens=.*$second" "$selectlog
 grep -q "^OUTPUTS: current=$second selectable=true" "$selectlog" || fail "the server did not switch to $second ($(grep OUTPUTS "$selectlog" | tr '\n' ' '))"
 # The probe sends no Resize of its own here, so the only reconfig after the
 # switch is the refit to the second screen's 4:3 shape.
-refit=$(sed -n '/^SELECTED/,$p' "$selectlog" | grep -m1 -o "reconfig to [0-9]*x[0-9]*" | grep -o "[0-9]*x[0-9]*$")
-[ -n "$refit" ] && [ $(( ${refit%x*} * 3 - ${refit#*x} * 4 )) -le 8 ] && [ $(( ${refit#*x} * 4 - ${refit%x*} * 3 )) -le 8 ] \
-    || fail "the stream was not refitted to $second's 4:3 shape (${refit:-no reconfig})"
+# Settings for the old screen may still arrive after the request, so any
+# reconfig after it may carry the new shape; the probe sends no Resize here.
+refits=$(sed -n '/^SELECTED/,$p' "$selectlog" | grep -o "reconfig to [0-9]*x[0-9]*" | grep -o "[0-9]*x[0-9]*$")
+echo "$refits" | awk -Fx '$1 && ($1 * 3 - $2 * 4)^2 <= 64 { ok = 1 } END { exit !ok }' \
+    || fail "the stream was not refitted to $second's 4:3 shape ($(echo ${refits:-no reconfig}))"
 grep -q '^PASS decoded 20 frames' "$selectlog" || fail "frames stopped after switching screens"
 "$SERVER" --listen 127.0.0.1:9053 --headless --instance "$NEST_SIG" >/tmp/gliff-e2e-select-server.log 2>&1 &
 ssp=$!; PIDS+=("$ssp"); sleep 2

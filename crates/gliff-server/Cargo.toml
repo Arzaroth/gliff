@@ -13,7 +13,7 @@ anyhow.workspace = true
 clap.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["signal"] }
 bytes.workspace = true
 gliff-proto.workspace = true
 gliff-transport.workspace = true

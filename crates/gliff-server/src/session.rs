@@ -8,6 +8,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use bytes::Bytes;
@@ -62,6 +63,11 @@ enum Incoming {
     },
     Stopped,
     Error(String),
+}
+
+fn ended_by(signal: &str) -> ControlFlow<()> {
+    tracing::info!(signal, "ending the session");
+    ControlFlow::Break(())
 }
 
 fn now_ms() -> u64 {
@@ -270,6 +276,9 @@ where
         .iter()
         .any(|feature| feature == gliff_proto::FEATURE_LOCK);
     let mut lock_on_end = crate::lock::LockOnEnd::new(session.instance.clone());
+    let mut hangup = signal(SignalKind::hangup())?;
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut interrupt = signal(SignalKind::interrupt())?;
     let mut last_heard = Instant::now();
     let mut liveness = tokio::time::interval(LIVENESS_PING);
     liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -328,6 +337,9 @@ where
                     ControlFlow::Continue(())
                 }
             }
+            _ = hangup.recv() => ended_by("SIGHUP"),
+            _ = terminate.recv() => ended_by("SIGTERM"),
+            _ = interrupt.recv() => ended_by("SIGINT"),
             ev = cap_rx.recv() => session.on_capture(ev)?,
             report = write_reports.recv() => {
                 let elapsed = report.context("writer task ended")??;

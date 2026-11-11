@@ -238,7 +238,8 @@ Every crate with `unsafe` documents the safety requirements at each block.
   desktop's idle daemon answers; logind lets the session's owner lock it
   without a polkit prompt. The server locks for `ClientMsg::LockScreen`
   and, once `LockOnDisconnect` armed it, from a guard dropped on every way
-  out of the session. While armed, the server pings the
+  out of the session, SIGHUP, SIGTERM and SIGINT included: ssh hangs up on
+  the server when its connection drops. While armed, the server pings the
   client every 5 s and ends the session after 15 s without a word from it,
   so a client that lost power or its network, and never closed the
   connection, still locks the screen. A `LockScreen` request runs on a blocking
